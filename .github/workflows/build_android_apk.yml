@@ -31,13 +31,13 @@ jobs:
           npm install
           npm run build
 
-      - name: Generate Android project, 15s alarm ringtone & SystemAlarm plugin
+      - name: Generate Android project & inject NativeTools (Audio/OCR/Doc/Alarm/Calendar)
         run: |
           npx cap add android
           python3 - << 'EOF'
           import os, wave, struct, math
 
-          # 1. 生成 15 秒真实清晰响铃音频 alarm_ring.wav 到 res/raw/
+          # 1. 生成 15 秒真实响铃音频 alarm_ring.wav
           raw_dir = "android/app/src/main/res/raw"
           os.makedirs(raw_dir, exist_ok=True)
           sr = 22050
@@ -58,7 +58,17 @@ jobs:
                   frames += struct.pack("<h", val)
               wf.writeframes(frames)
 
-          # 2. 写入安卓响铃与系统闹钟权限
+          # 2. 注入 Google ML Kit 离线中英文 OCR 依赖到 android/app/build.gradle
+          gradle_path = "android/app/build.gradle"
+          with open(gradle_path, "r", encoding="utf-8") as f:
+              gradle = f.read()
+          dep = "    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'\n"
+          if "text-recognition-chinese" not in gradle:
+              gradle = gradle.replace("dependencies {\n", "dependencies {\n" + dep, 1)
+          with open(gradle_path, "w", encoding="utf-8") as f:
+              f.write(gradle)
+
+          # 3. 写入安卓权限
           manifest_path = "android/app/src/main/AndroidManifest.xml"
           with open(manifest_path, "r", encoding="utf-8") as f:
               xml = f.read()
@@ -76,35 +86,261 @@ jobs:
           with open(manifest_path, "w", encoding="utf-8") as f:
               f.write(xml)
 
-          # 3. 注入原生 SystemAlarmPlugin.java（直接调起手机系统时钟设真闹钟）
+          # 4. 注入原生 NativeToolsPlugin.java
           java_dir = "android/app/src/main/java/com/personal/studyhub"
           os.makedirs(java_dir, exist_ok=True)
-          plugin_code = """package com.personal.studyhub;
+          plugin_code = r'''package com.personal.studyhub;
 
+          import android.app.Activity;
+          import android.content.ClipData;
           import android.content.Intent;
+          import android.database.Cursor;
+          import android.graphics.Bitmap;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.pdf.PdfRenderer;
+          import android.net.Uri;
+          import android.os.ParcelFileDescriptor;
           import android.provider.AlarmClock;
+          import android.provider.CalendarContract;
+          import android.provider.OpenableColumns;
+          import android.webkit.MimeTypeMap;
+          import androidx.activity.result.ActivityResult;
           import com.getcapacitor.JSArray;
+          import com.getcapacitor.JSObject;
           import com.getcapacitor.Plugin;
           import com.getcapacitor.PluginCall;
           import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.ActivityCallback;
           import com.getcapacitor.annotation.CapacitorPlugin;
+          import com.google.mlkit.vision.common.InputImage;
+          import com.google.mlkit.vision.text.TextRecognition;
+          import com.google.mlkit.vision.text.TextRecognizer;
+          import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
+          import java.io.BufferedReader;
+          import java.io.ByteArrayOutputStream;
+          import java.io.File;
+          import java.io.FileInputStream;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
+          import java.io.InputStreamReader;
+          import java.nio.charset.StandardCharsets;
           import java.util.ArrayList;
+          import java.util.Locale;
+          import java.util.zip.ZipEntry;
+          import java.util.zip.ZipInputStream;
           import org.json.JSONException;
 
-          @CapacitorPlugin(name = "SystemAlarm")
-          public class SystemAlarmPlugin extends Plugin {
+          @CapacitorPlugin(name = "NativeTools")
+          public class NativeToolsPlugin extends Plugin {
+
               @PluginMethod
-              public void setAlarm(PluginCall call) {
+              public void pickFiles(PluginCall call) {
+                  String accept = call.getString("accept", "*/*");
+                  boolean multiple = Boolean.TRUE.equals(call.getBoolean("multiple", false));
+                  Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                  intent.addCategory(Intent.CATEGORY_OPENABLE);
+                  intent.setType(accept);
+                  intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple);
+                  startActivityForResult(call, intent, "onPickFilesResult");
+              }
+
+              @ActivityCallback
+              private void onPickFilesResult(PluginCall call, ActivityResult result) {
+                  if (call == null) return;
+                  if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
+                      call.reject("已取消选择");
+                      return;
+                  }
+                  Intent data = result.getData();
+                  ArrayList<Uri> uris = new ArrayList<>();
+                  ClipData clip = data.getClipData();
+                  if (clip != null) {
+                      for (int i = 0; i < clip.getItemCount(); i++) {
+                          uris.add(clip.getItemAt(i).getUri());
+                      }
+                  } else if (data.getData() != null) {
+                      uris.add(data.getData());
+                  }
+
+                  File dir = new File(getContext().getFilesDir(), "imported");
+                  if (!dir.exists()) dir.mkdirs();
+
+                  JSArray arr = new JSArray();
+                  for (Uri uri : uris) {
+                      try {
+                          String name = queryDisplayName(uri);
+                          String mime = getContext().getContentResolver().getType(uri);
+                          if (mime == null) mime = "application/octet-stream";
+                          String ext = "";
+                          int dot = name.lastIndexOf('.');
+                          if (dot > 0 && dot < name.length() - 1) {
+                              ext = name.substring(dot + 1).toLowerCase(Locale.ROOT);
+                          } else {
+                              String guessed = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime);
+                              if (guessed != null) {
+                                  ext = guessed.toLowerCase(Locale.ROOT);
+                                  name = name + "." + ext;
+                              }
+                          }
+                          String safeName = System.currentTimeMillis() + "_" + name.replaceAll("[^a-zA-Z0-9._-]", "_");
+                          File dest = new File(dir, safeName);
+                          long totalBytes = 0;
+                          try (InputStream in = getContext().getContentResolver().openInputStream(uri);
+                               FileOutputStream out = new FileOutputStream(dest)) {
+                              if (in == null) continue;
+                              byte[] buf = new byte[16384];
+                              int len;
+                              while ((len = in.read(buf)) > 0) {
+                                  out.write(buf, 0, len);
+                                  totalBytes += len;
+                              }
+                          }
+                          JSObject obj = new JSObject();
+                          obj.put("name", name);
+                          obj.put("format", ext.isEmpty() ? "FILE" : ext.toUpperCase(Locale.ROOT));
+                          obj.put("mime", mime);
+                          obj.put("size", totalBytes);
+                          obj.put("localPath", dest.getAbsolutePath());
+                          arr.put(obj);
+                      } catch (Exception e) {
+                          e.printStackTrace();
+                      }
+                  }
+                  JSObject ret = new JSObject();
+                  ret.put("files", arr);
+                  call.resolve(ret);
+              }
+
+              private String queryDisplayName(Uri uri) {
+                  String name = "file_" + System.currentTimeMillis();
+                  try (Cursor cursor = getContext().getContentResolver().query(uri, null, null, null, null)) {
+                      if (cursor != null && cursor.moveToFirst()) {
+                          int idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                          if (idx >= 0) {
+                              String n = cursor.getString(idx);
+                              if (n != null && !n.trim().isEmpty()) name = n.trim();
+                          }
+                      }
+                  } catch (Exception ignored) {}
+                  return name;
+              }
+
+              @PluginMethod
+              public void deleteLocalFile(PluginCall call) {
+                  String path = call.getString("localPath", "");
+                  if (!path.isEmpty()) {
+                      File f = new File(path);
+                      if (f.exists()) f.delete();
+                  }
+                  call.resolve();
+              }
+
+              @PluginMethod
+              public void extractText(PluginCall call) {
+                  String path = call.getString("localPath", "");
+                  if (path.isEmpty()) {
+                      call.reject("文件路径为空");
+                      return;
+                  }
+                  File file = new File(path);
+                  if (!file.exists()) {
+                      call.reject("本地文件不存在");
+                      return;
+                  }
+                  String lower = file.getName().toLowerCase(Locale.ROOT);
+                  try {
+                      // 1. 纯文本文件
+                      if (lower.endsWith(".txt") || lower.endsWith(".csv") || lower.endsWith(".md") || lower.endsWith(".json")) {
+                          StringBuilder sb = new StringBuilder();
+                          try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+                              String line;
+                              while ((line = br.readLine()) != null) sb.append(line).append("\n");
+                          }
+                          JSObject ret = new JSObject();
+                          ret.put("text", sb.toString());
+                          call.resolve(ret);
+                          return;
+                      }
+                      // 2. Office 文档 (.docx / .xlsx / .pptx) 原生 ZIP-XML 文本提取
+                      if (lower.endsWith(".docx") || lower.endsWith(".xlsx") || lower.endsWith(".pptx")) {
+                          String text = extractOfficeXmlText(file);
+                          JSObject ret = new JSObject();
+                          ret.put("text", text);
+                          call.resolve(ret);
+                          return;
+                      }
+                      // 3. PDF：用安卓原生 PdfRenderer 渲染首页后交给离线 ML Kit 中英文 OCR
+                      if (lower.endsWith(".pdf")) {
+                          ParcelFileDescriptor pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
+                          PdfRenderer renderer = new PdfRenderer(pfd);
+                          if (renderer.getPageCount() == 0) {
+                              renderer.close();
+                              pfd.close();
+                              call.reject("PDF为空");
+                              return;
+                          }
+                          PdfRenderer.Page page = renderer.openPage(0);
+                          Bitmap bmp = Bitmap.createBitmap(page.getWidth() * 2, page.getHeight() * 2, Bitmap.Config.ARGB_8888);
+                          Canvas canvas = new Canvas(bmp);
+                          canvas.drawColor(Color.WHITE);
+                          page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                          page.close();
+                          renderer.close();
+                          pfd.close();
+                          runOcrOnInputImage(InputImage.fromBitmap(bmp, 0), call);
+                          return;
+                      }
+                      // 4. 图片文件：直接用 ML Kit 离线中英文 OCR 识别
+                      InputImage image = InputImage.fromFilePath(getContext(), Uri.fromFile(file));
+                      runOcrOnInputImage(image, call);
+                  } catch (Exception e) {
+                      call.reject("解析文件失败: " + e.getMessage());
+                  }
+              }
+
+              private void runOcrOnInputImage(InputImage image, PluginCall call) {
+                  TextRecognizer recognizer = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
+                  recognizer.process(image)
+                      .addOnSuccessListener(visionText -> {
+                          JSObject ret = new JSObject();
+                          ret.put("text", visionText.getText());
+                          call.resolve(ret);
+                      })
+                      .addOnFailureListener(e -> call.reject("OCR 识别失败: " + e.getMessage()));
+              }
+
+              private String extractOfficeXmlText(File file) throws Exception {
+                  StringBuilder sb = new StringBuilder();
+                  try (ZipInputStream zis = new ZipInputStream(new FileInputStream(file))) {
+                      ZipEntry entry;
+                      while ((entry = zis.getNextEntry()) != null) {
+                          String n = entry.getName();
+                          if (n.equals("word/document.xml") || n.equals("xl/sharedStrings.xml") || (n.startsWith("ppt/slides/slide") && n.endsWith(".xml"))) {
+                              ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                              byte[] buf = new byte[8192];
+                              int len;
+                              while ((len = zis.read(buf)) > 0) baos.write(buf, 0, len);
+                              String xml = baos.toString("UTF-8");
+                              xml = xml.replaceAll("</w:p>|</a:p>|</si>|</row>", "\n");
+                              xml = xml.replaceAll("<[^>]+>", " ");
+                              xml = xml.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"");
+                              sb.append(xml).append("\n");
+                          }
+                          zis.closeEntry();
+                      }
+                  }
+                  return sb.toString().replaceAll("[ \\t]+", " ").replaceAll("\\n\\s*\\n+", "\n").trim();
+              }
+
+              @PluginMethod
+              public void setSystemAlarm(PluginCall call) {
                   Integer hour = call.getInt("hour");
                   Integer minute = call.getInt("minute");
                   String message = call.getString("message", "学财助手闹钟");
                   Boolean skipUi = call.getBoolean("skipUi", false);
                   JSArray daysArr = call.getArray("days");
-
-                  if (hour == null || minute == null) {
-                      call.reject("Missing hour or minute");
-                      return;
-                  }
+                  if (hour == null || minute == null) { call.reject("缺少时间"); return; }
 
                   Intent intent = new Intent(AlarmClock.ACTION_SET_ALARM);
                   intent.putExtra(AlarmClock.EXTRA_HOUR, hour);
@@ -116,29 +352,50 @@ jobs:
                   if (daysArr != null && daysArr.length() > 0) {
                       ArrayList<Integer> days = new ArrayList<>();
                       for (int i = 0; i < daysArr.length(); i++) {
-                          try {
-                              days.add(daysArr.getInt(i));
-                          } catch (JSONException ignored) {}
+                          try { days.add(daysArr.getInt(i)); } catch (JSONException ignored) {}
                       }
-                      if (!days.isEmpty()) {
-                          intent.putIntegerArrayListExtra(AlarmClock.EXTRA_DAYS, days);
-                      }
+                      if (!days.isEmpty()) intent.putIntegerArrayListExtra(AlarmClock.EXTRA_DAYS, days);
                   }
-
                   intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                   try {
                       getContext().startActivity(intent);
                       call.resolve();
                   } catch (Exception e) {
-                      call.reject("无法调起系统闹钟: " + e.getMessage());
+                      call.reject("调起系统闹钟失败: " + e.getMessage());
+                  }
+              }
+
+              @PluginMethod
+              public void addCalendarEvent(PluginCall call) {
+                  String title = call.getString("title", "学习日程");
+                  String location = call.getString("location", "");
+                  String description = call.getString("description", "");
+                  Long startMs = call.getLong("startTimeMs");
+                  Long endMs = call.getLong("endTimeMs");
+                  String rrule = call.getString("rrule", "");
+
+                  Intent intent = new Intent(Intent.ACTION_INSERT);
+                  intent.setData(CalendarContract.Events.CONTENT_URI);
+                  intent.putExtra(CalendarContract.Events.TITLE, title);
+                  intent.putExtra(CalendarContract.Events.EVENT_LOCATION, location);
+                  intent.putExtra(CalendarContract.Events.DESCRIPTION, description);
+                  if (startMs != null) intent.putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, startMs);
+                  if (endMs != null) intent.putExtra(CalendarContract.EXTRA_EVENT_END_TIME, endMs);
+                  if (rrule != null && !rrule.isEmpty()) intent.putExtra(CalendarContract.Events.RRULE, rrule);
+                  intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                  try {
+                      getContext().startActivity(intent);
+                      call.resolve();
+                  } catch (Exception e) {
+                      call.reject("调起系统日历失败: " + e.getMessage());
                   }
               }
           }
-          """
-          with open(os.path.join(java_dir, "SystemAlarmPlugin.java"), "w", encoding="utf-8") as f:
+          '''
+          with open(os.path.join(java_dir, "NativeToolsPlugin.java"), "w", encoding="utf-8") as f:
               f.write(plugin_code)
 
-          # 4. 在 MainActivity 中注册插件
+          # 5. 在 MainActivity 中注册插件
           main_activity = """package com.personal.studyhub;
 
           import android.os.Bundle;
@@ -147,7 +404,7 @@ jobs:
           public class MainActivity extends BridgeActivity {
               @Override
               public void onCreate(Bundle savedInstanceState) {
-                  registerPlugin(SystemAlarmPlugin.class);
+                  registerPlugin(NativeToolsPlugin.class);
                   super.onCreate(savedInstanceState);
               }
           }
