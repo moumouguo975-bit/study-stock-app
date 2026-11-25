@@ -31,7 +31,7 @@ jobs:
           npm install
           npm run build
 
-      - name: Generate Android project & inject MusicService + NativeTools
+      - name: Generate Android project & inject Zero-Copy MusicService + NativeTools
         run: |
           npx cap add android
           python3 - << 'EOF'
@@ -86,6 +86,8 @@ jobs:
               <uses-permission android:name="android.permission.WAKE_LOCK" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
           """
           if "FOREGROUND_SERVICE_MEDIA_PLAYBACK" not in xml:
               xml = xml.replace("<application", perms + "\n    <application", 1)
@@ -103,7 +105,7 @@ jobs:
           java_dir = "android/app/src/main/java/com/personal/studyhub"
           os.makedirs(java_dir, exist_ok=True)
 
-          # 4. 后台流畅播放服务 MusicService.java（同时支持本地音频与在线流媒体 URL）
+          # 4. 零占用后台音乐服务 MusicService.java（直接读取 content:// URI 路径 & 在线流，0 复制不占额外空间）
           music_service_code = textwrap.dedent(r'''
               package com.personal.studyhub;
 
@@ -119,6 +121,7 @@ jobs:
               import android.media.PlaybackParams;
               import android.media.audiofx.BassBoost;
               import android.media.audiofx.Equalizer;
+              import android.net.Uri;
               import android.os.Build;
               import android.os.IBinder;
               import android.os.PowerManager;
@@ -132,6 +135,7 @@ jobs:
 
                   public static ArrayList<String> paths = new ArrayList<>();
                   public static ArrayList<String> titles = new ArrayList<>();
+                  public static ArrayList<String> formats = new ArrayList<>();
                   public static int currentIndex = -1;
                   public static String loopMode = "list";
                   public static float playSpeed = 1.0f;
@@ -156,9 +160,10 @@ jobs:
                   @Override
                   public int onStartCommand(Intent intent, int flags, int startId) {
                       String action = intent != null ? intent.getAction() : "";
-                      String title = (currentIndex >= 0 && currentIndex < titles.size())
-                          ? titles.get(currentIndex)
-                          : (!keepAliveTitle.isEmpty() ? keepAliveTitle : "学财助手后台音频");
+                      String title = getCurrentTitle();
+                      if (title.isEmpty()) {
+                          title = !keepAliveTitle.isEmpty() ? keepAliveTitle : "学财助手后台音频";
+                      }
                       startForegroundCompat(title, "后台流畅播放中");
 
                       if ("ACTION_PLAY_LIST".equals(action)) {
@@ -224,8 +229,8 @@ jobs:
                   public synchronized void playIndex(int idx) {
                       if (paths.isEmpty() || idx < 0 || idx >= paths.size()) return;
                       currentIndex = idx;
-                      String path = paths.get(idx);
-                      String title = idx < titles.size() ? titles.get(idx) : "音乐";
+                      String source = paths.get(idx);
+                      String title = getCurrentTitle();
                       releasePlayer();
                       try {
                           player = new MediaPlayer();
@@ -236,7 +241,12 @@ jobs:
                                   .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                                   .build()
                           );
-                          player.setDataSource(path);
+                          // 零拷贝关键：直接从 content:// URI 或在线流媒体 URL 解码，不复制不落盘！
+                          if (source.startsWith("content://")) {
+                              player.setDataSource(getApplicationContext(), Uri.parse(source));
+                          } else {
+                              player.setDataSource(source);
+                          }
                           player.setOnPreparedListener(mp -> {
                               isPrepared = true;
                               attachAudioEffects(mp.getAudioSessionId());
@@ -268,16 +278,12 @@ jobs:
                           if (equalizer != null) equalizer.release();
                           equalizer = new Equalizer(0, sessionId);
                           equalizer.setEnabled(true);
-                      } catch (Exception ignored) {
-                          equalizer = null;
-                      }
+                      } catch (Exception ignored) { equalizer = null; }
                       try {
                           if (bassBoost != null) bassBoost.release();
                           bassBoost = new BassBoost(0, sessionId);
                           bassBoost.setEnabled(true);
-                      } catch (Exception ignored) {
-                          bassBoost = null;
-                      }
+                      } catch (Exception ignored) { bassBoost = null; }
                       applyEq(eqBass, eqMid, eqTreble);
                   }
 
@@ -290,9 +296,7 @@ jobs:
                               short numBands = equalizer.getNumberOfBands();
                               short[] range = equalizer.getBandLevelRange();
                               for (short b = 0; b < numBands; b++) {
-                                  int db = mid;
-                                  if (b == 0) db = bass;
-                                  else if (b == numBands - 1) db = treble;
+                                  int db = (b == 0) ? bass : (b == numBands - 1 ? treble : mid);
                                   short lv = (short) Math.max(range[0], Math.min(range[1], db * 100));
                                   equalizer.setBandLevel(b, lv);
                               }
@@ -320,16 +324,14 @@ jobs:
                   public synchronized void pause() {
                       if (player != null && isPrepared && player.isPlaying()) {
                           player.pause();
-                          String title = (currentIndex >= 0 && currentIndex < titles.size()) ? titles.get(currentIndex) : "音乐";
-                          updateNotification(title, "已暂停");
+                          updateNotification(getCurrentTitle(), "已暂停");
                       }
                   }
 
                   public synchronized void resume() {
                       if (player != null && isPrepared && !player.isPlaying()) {
                           player.start();
-                          String title = (currentIndex >= 0 && currentIndex < titles.size()) ? titles.get(currentIndex) : "音乐";
-                          updateNotification(title, "正在后台流畅播放");
+                          updateNotification(getCurrentTitle(), "正在后台流畅播放");
                       }
                   }
 
@@ -337,16 +339,14 @@ jobs:
                       if (player != null && isPrepared) player.seekTo(ms);
                   }
 
-                  public synchronized boolean isPlaying() {
-                      return player != null && isPrepared && player.isPlaying();
+                  public synchronized boolean isPlaying() { return player != null && isPrepared && player.isPlaying(); }
+                  public synchronized int getCurrentMs() { return (player != null && isPrepared) ? player.getCurrentPosition() : 0; }
+                  public synchronized int getDurationMs() { return (player != null && isPrepared) ? player.getDuration() : 0; }
+                  public synchronized String getCurrentTitle() {
+                      return (currentIndex >= 0 && currentIndex < titles.size()) ? titles.get(currentIndex) : "";
                   }
-
-                  public synchronized int getCurrentMs() {
-                      return (player != null && isPrepared) ? player.getCurrentPosition() : 0;
-                  }
-
-                  public synchronized int getDurationMs() {
-                      return (player != null && isPrepared) ? player.getDuration() : 0;
+                  public synchronized String getCurrentFormat() {
+                      return (currentIndex >= 0 && currentIndex < formats.size()) ? formats.get(currentIndex) : "AUDIO";
                   }
 
                   private void releasePlayer() {
@@ -364,33 +364,36 @@ jobs:
                   }
 
                   @Override
-                  public IBinder onBind(Intent intent) {
-                      return null;
-                  }
+                  public IBinder onBind(Intent intent) { return null; }
               }
           ''').lstrip()
 
           with open(os.path.join(java_dir, "MusicService.java"), "w", encoding="utf-8") as f:
               f.write(music_service_code)
 
-          # 5. NativeToolsPlugin.java（文件选择 + OCR/文档提取 + 在线音乐下载 + TTS朗读 + 后台音乐 + 系统闹钟/日历）
+          # 5. NativeToolsPlugin.java（零拷贝音频路径关联 + 设备定位 + 中外双语连读TTS + OCR/文档提取 + 闹钟/日历）
           plugin_code = textwrap.dedent(r'''
               package com.personal.studyhub;
 
+              import android.Manifest;
               import android.app.Activity;
               import android.content.ClipData;
               import android.content.Intent;
+              import android.content.pm.PackageManager;
               import android.database.Cursor;
               import android.graphics.Bitmap;
               import android.graphics.Canvas;
               import android.graphics.Color;
               import android.graphics.pdf.PdfRenderer;
+              import android.location.Location;
+              import android.location.LocationManager;
               import android.net.Uri;
               import android.os.ParcelFileDescriptor;
               import android.provider.AlarmClock;
               import android.provider.CalendarContract;
               import android.provider.OpenableColumns;
               import android.speech.tts.TextToSpeech;
+              import android.speech.tts.UtteranceProgressListener;
               import android.webkit.MimeTypeMap;
               import androidx.activity.result.ActivityResult;
               import androidx.core.content.ContextCompat;
@@ -412,8 +415,6 @@ jobs:
               import java.io.FileOutputStream;
               import java.io.InputStream;
               import java.io.InputStreamReader;
-              import java.net.HttpURLConnection;
-              import java.net.URL;
               import java.nio.charset.StandardCharsets;
               import java.util.ArrayList;
               import java.util.Locale;
@@ -426,38 +427,25 @@ jobs:
                   private TextToSpeech tts;
                   private boolean ttsReady = false;
 
-                  @PluginMethod
-                  public void speakText(PluginCall call) {
-                      String text = call.getString("text", "");
-                      String lang = call.getString("lang", "zh-CN");
-                      if (text.isEmpty()) {
-                          call.resolve();
-                          return;
-                      }
-                      Runnable runSpeak = () -> {
-                          try {
-                              Locale loc = Locale.SIMPLIFIED_CHINESE;
-                              if ("en".equals(lang)) loc = Locale.US;
-                              else if ("ja".equals(lang)) loc = Locale.JAPAN;
-                              else if ("ko".equals(lang)) loc = Locale.KOREA;
-                              else if ("fr".equals(lang)) loc = Locale.FRANCE;
-                              else if ("de".equals(lang)) loc = Locale.GERMANY;
-                              else if ("es".equals(lang)) loc = new Locale("es");
-                              else if ("ru".equals(lang)) loc = new Locale("ru");
-                              tts.setLanguage(loc);
-                              tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "studyhub_tts");
-                              call.resolve();
-                          } catch (Exception e) {
-                              call.reject(e.getMessage());
-                          }
-                      };
+                  private Locale mapLangToLocale(String lang) {
+                      if ("en".equals(lang)) return Locale.US;
+                      if ("ja".equals(lang)) return Locale.JAPAN;
+                      if ("ko".equals(lang)) return Locale.KOREA;
+                      if ("fr".equals(lang)) return Locale.FRANCE;
+                      if ("de".equals(lang)) return Locale.GERMANY;
+                      if ("es".equals(lang)) return new Locale("es");
+                      if ("ru".equals(lang)) return new Locale("ru");
+                      return Locale.SIMPLIFIED_CHINESE;
+                  }
+
+                  private void withTtsReady(Runnable action, PluginCall call) {
                       if (tts != null && ttsReady) {
-                          runSpeak.run();
+                          action.run();
                       } else {
                           tts = new TextToSpeech(getContext(), status -> {
                               if (status == TextToSpeech.SUCCESS) {
                                   ttsReady = true;
-                                  runSpeak.run();
+                                  action.run();
                               } else {
                                   call.reject("设备未安装语音朗读引擎");
                               }
@@ -466,62 +454,147 @@ jobs:
                   }
 
                   @PluginMethod
-                  public void downloadUrlToLocal(PluginCall call) {
-                      String urlStr = call.getString("url", "");
-                      String name = call.getString("name", "song.mp3");
-                      String format = call.getString("format", "MP3");
-                      if (urlStr.isEmpty()) {
-                          call.reject("URL为空");
+                  public void speakText(PluginCall call) {
+                      String text = call.getString("text", "");
+                      String lang = call.getString("lang", "zh-CN");
+                      if (text.isEmpty()) { call.resolve(); return; }
+                      withTtsReady(() -> {
+                          try {
+                              tts.setOnUtteranceProgressListener(null);
+                              tts.setLanguage(mapLangToLocale(lang));
+                              tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "single_tts");
+                              call.resolve();
+                          } catch (Exception e) { call.reject(e.getMessage()); }
+                      }, call);
+                  }
+
+                  @PluginMethod
+                  public void speakPair(PluginCall call) {
+                      String text1 = call.getString("text1", "");
+                      String lang1 = call.getString("lang1", "en");
+                      String text2 = call.getString("text2", "");
+                      String lang2 = call.getString("lang2", "zh-CN");
+                      if (text1.isEmpty() && text2.isEmpty()) { call.resolve(); return; }
+                      withTtsReady(() -> {
+                          try {
+                              tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                                  @Override public void onStart(String id) {}
+                                  @Override public void onError(String id) {}
+                                  @Override
+                                  public void onDone(String id) {
+                                      if ("pair_1".equals(id) && !text2.isEmpty()) {
+                                          try {
+                                              Thread.sleep(220);
+                                              tts.setLanguage(mapLangToLocale(lang2));
+                                              tts.speak(text2, TextToSpeech.QUEUE_FLUSH, null, "pair_2");
+                                          } catch (Exception ignored) {}
+                                      }
+                                  }
+                              });
+                              tts.setLanguage(mapLangToLocale(lang1));
+                              tts.speak(text1, TextToSpeech.QUEUE_FLUSH, null, "pair_1");
+                              call.resolve();
+                          } catch (Exception e) { call.reject(e.getMessage()); }
+                      }, call);
+                  }
+
+                  @PluginMethod
+                  public void getDeviceLocation(PluginCall call) {
+                      try {
+                          boolean hasCoarse = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+                          boolean hasFine = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+                          if (!hasCoarse && !hasFine) {
+                              call.reject("未授予设备定位权限");
+                              return;
+                          }
+                          LocationManager lm = (LocationManager) getContext().getSystemService(android.content.Context.LOCATION_SERVICE);
+                          if (lm == null) { call.reject("无定位服务"); return; }
+                          Location loc = null;
+                          for (String provider : lm.getProviders(true)) {
+                              Location l = lm.getLastKnownLocation(provider);
+                              if (l != null && (loc == null || l.getAccuracy() < loc.getAccuracy())) {
+                                  loc = l;
+                              }
+                          }
+                          if (loc == null) { call.reject("暂无缓存定位"); return; }
+                          JSObject ret = new JSObject();
+                          ret.put("lat", loc.getLatitude());
+                          ret.put("lon", loc.getLongitude());
+                          call.resolve(ret);
+                      } catch (Exception e) {
+                          call.reject(e.getMessage());
+                      }
+                  }
+
+                  // 零拷贝音频选择器：只获取持久化 URI 权限，绝不复制文件、0 字节额外存储！
+                  @PluginMethod
+                  public void pickAudioRefs(PluginCall call) {
+                      Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                      intent.addCategory(Intent.CATEGORY_OPENABLE);
+                      intent.setType("audio/*");
+                      intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, Boolean.TRUE.equals(call.getBoolean("multiple", true)));
+                      intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                      startActivityForResult(call, intent, "onPickAudioRefsResult");
+                  }
+
+                  @ActivityCallback
+                  private void onPickAudioRefsResult(PluginCall call, ActivityResult result) {
+                      if (call == null) return;
+                      if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
+                          call.reject("已取消选择");
                           return;
                       }
-                      new Thread(() -> {
+                      Intent data = result.getData();
+                      ArrayList<Uri> uris = new ArrayList<>();
+                      ClipData clip = data.getClipData();
+                      if (clip != null) {
+                          for (int i = 0; i < clip.getItemCount(); i++) uris.add(clip.getItemAt(i).getUri());
+                      } else if (data.getData() != null) {
+                          uris.add(data.getData());
+                      }
+
+                      JSArray arr = new JSArray();
+                      for (Uri uri : uris) {
                           try {
-                              File dir = new File(getContext().getFilesDir(), "imported");
-                              if (!dir.exists()) dir.mkdirs();
-                              String safeName = System.currentTimeMillis() + "_" + name.replaceAll("[^a-zA-Z0-9._-]", "_");
-                              File dest = new File(dir, safeName);
-                              HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-                              conn.setInstanceFollowRedirects(true);
-                              conn.setRequestProperty("User-Agent", "Mozilla/5.0");
-                              conn.setConnectTimeout(15000);
-                              conn.setReadTimeout(30000);
-                              long total = 0;
-                              try (InputStream in = conn.getInputStream();
-                                   FileOutputStream out = new FileOutputStream(dest)) {
-                                  byte[] buf = new byte[16384];
-                                  int len;
-                                  while ((len = in.read(buf)) > 0) {
-                                      out.write(buf, 0, len);
-                                      total += len;
-                                  }
+                              try {
+                                  getContext().getContentResolver().takePersistableUriPermission(
+                                      uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                  );
+                              } catch (Exception ignored) {}
+
+                              String name = queryDisplayName(uri);
+                              long size = queryFileSize(uri);
+                              String mime = getContext().getContentResolver().getType(uri);
+                              if (mime == null) mime = "audio/mpeg";
+                              String ext = "";
+                              int dot = name.lastIndexOf('.');
+                              if (dot > 0 && dot < name.length() - 1) {
+                                  ext = name.substring(dot + 1).toLowerCase(Locale.ROOT);
+                              } else {
+                                  String g = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime);
+                                  if (g != null) ext = g.toLowerCase(Locale.ROOT);
                               }
-                              JSObject ret = new JSObject();
-                              ret.put("name", name);
-                              ret.put("format", format.toUpperCase(Locale.ROOT));
-                              ret.put("size", total);
-                              ret.put("localPath", dest.getAbsolutePath());
-                              call.resolve(ret);
+
+                              JSObject obj = new JSObject();
+                              obj.put("name", name);
+                              obj.put("format", ext.isEmpty() ? "AUDIO" : ext.toUpperCase(Locale.ROOT));
+                              obj.put("mime", mime);
+                              obj.put("size", size);
+                              obj.put("uri", uri.toString());
+                              arr.put(obj);
                           } catch (Exception e) {
-                              call.reject("下载失败: " + e.getMessage());
+                              e.printStackTrace();
                           }
-                      }).start();
+                      }
+                      JSObject ret = new JSObject();
+                      ret.put("files", arr);
+                      call.resolve(ret);
                   }
 
                   @PluginMethod
                   public void audioPlayList(PluginCall call) {
                       try {
-                          JSArray pArr = call.getArray("paths");
-                          JSArray tArr = call.getArray("titles");
-                          ArrayList<String> ps = new ArrayList<>();
-                          ArrayList<String> ts = new ArrayList<>();
-                          if (pArr != null) {
-                              for (int i = 0; i < pArr.length(); i++) ps.add(pArr.getString(i));
-                          }
-                          if (tArr != null) {
-                              for (int i = 0; i < tArr.length(); i++) ts.add(tArr.getString(i));
-                          }
-                          MusicService.paths = ps;
-                          MusicService.titles = ts;
+                          updateStaticLists(call);
                           MusicService.currentIndex = call.getInt("index", 0);
                           MusicService.loopMode = call.getString("loopMode", "list");
                           MusicService.playSpeed = call.getFloat("speed", 1.0f);
@@ -538,82 +611,75 @@ jobs:
                       }
                   }
 
+                  // 静默更新歌单列表，绝不打断正在播放的歌曲！
                   @PluginMethod
-                  public void audioPause(PluginCall call) {
-                      if (MusicService.instance != null) MusicService.instance.pause();
-                      call.resolve();
+                  public void audioUpdatePlaylist(PluginCall call) {
+                      try {
+                          updateStaticLists(call);
+                          call.resolve();
+                      } catch (Exception e) {
+                          call.reject(e.getMessage());
+                      }
                   }
 
-                  @PluginMethod
-                  public void audioResume(PluginCall call) {
-                      if (MusicService.instance != null) MusicService.instance.resume();
-                      call.resolve();
+                  private void updateStaticLists(PluginCall call) throws JSONException {
+                      JSArray pArr = call.getArray("paths");
+                      JSArray tArr = call.getArray("titles");
+                      JSArray fArr = call.getArray("formats");
+                      ArrayList<String> ps = new ArrayList<>();
+                      ArrayList<String> ts = new ArrayList<>();
+                      ArrayList<String> fs = new ArrayList<>();
+                      if (pArr != null) for (int i = 0; i < pArr.length(); i++) ps.add(pArr.getString(i));
+                      if (tArr != null) for (int i = 0; i < tArr.length(); i++) ts.add(tArr.getString(i));
+                      if (fArr != null) for (int i = 0; i < fArr.length(); i++) fs.add(fArr.getString(i));
+                      MusicService.paths = ps;
+                      MusicService.titles = ts;
+                      MusicService.formats = fs;
                   }
 
-                  @PluginMethod
-                  public void audioSeek(PluginCall call) {
-                      if (MusicService.instance != null) MusicService.instance.seekTo(call.getInt("positionMs", 0));
-                      call.resolve();
-                  }
-
-                  @PluginMethod
-                  public void audioSetSpeed(PluginCall call) {
+                  @PluginMethod public void audioPause(PluginCall call) { if (MusicService.instance != null) MusicService.instance.pause(); call.resolve(); }
+                  @PluginMethod public void audioResume(PluginCall call) { if (MusicService.instance != null) MusicService.instance.resume(); call.resolve(); }
+                  @PluginMethod public void audioSeek(PluginCall call) { if (MusicService.instance != null) MusicService.instance.seekTo(call.getInt("positionMs", 0)); call.resolve(); }
+                  @PluginMethod public void audioSetSpeed(PluginCall call) {
                       float sp = call.getFloat("speed", 1.0f);
                       MusicService.playSpeed = sp;
                       if (MusicService.instance != null) MusicService.instance.applySpeed(sp);
                       call.resolve();
                   }
-
-                  @PluginMethod
-                  public void audioSetLoopMode(PluginCall call) {
-                      MusicService.loopMode = call.getString("loopMode", "list");
-                      call.resolve();
-                  }
-
-                  @PluginMethod
-                  public void audioSetEq(PluginCall call) {
-                      int b = call.getInt("bass", 0);
-                      int m = call.getInt("mid", 0);
-                      int t = call.getInt("treble", 0);
-                      MusicService.eqBass = b;
-                      MusicService.eqMid = m;
-                      MusicService.eqTreble = t;
+                  @PluginMethod public void audioSetLoopMode(PluginCall call) { MusicService.loopMode = call.getString("loopMode", "list"); call.resolve(); }
+                  @PluginMethod public void audioSetEq(PluginCall call) {
+                      int b = call.getInt("bass", 0), m = call.getInt("mid", 0), t = call.getInt("treble", 0);
+                      MusicService.eqBass = b; MusicService.eqMid = m; MusicService.eqTreble = t;
                       if (MusicService.instance != null) MusicService.instance.applyEq(b, m, t);
                       call.resolve();
                   }
-
-                  @PluginMethod
-                  public void audioStop(PluginCall call) {
+                  @PluginMethod public void audioStop(PluginCall call) {
                       Intent i = new Intent(getContext(), MusicService.class);
                       i.setAction("ACTION_STOP_ALL");
                       getContext().startService(i);
                       call.resolve();
                   }
-
-                  @PluginMethod
-                  public void setKeepAlive(PluginCall call) {
+                  @PluginMethod public void setKeepAlive(PluginCall call) {
                       boolean active = Boolean.TRUE.equals(call.getBoolean("active", false));
                       MusicService.keepAliveTitle = call.getString("title", "白噪音");
                       Intent i = new Intent(getContext(), MusicService.class);
                       i.setAction(active ? "ACTION_KEEP_ALIVE" : "ACTION_STOP_ALL");
-                      if (active) {
-                          ContextCompat.startForegroundService(getContext(), i);
-                      } else if (MusicService.instance != null && !MusicService.instance.isPlaying()) {
-                          getContext().startService(i);
-                      }
+                      if (active) ContextCompat.startForegroundService(getContext(), i);
+                      else if (MusicService.instance != null && !MusicService.instance.isPlaying()) getContext().startService(i);
                       call.resolve();
                   }
-
-                  @PluginMethod
-                  public void audioGetStatus(PluginCall call) {
+                  @PluginMethod public void audioGetStatus(PluginCall call) {
                       JSObject ret = new JSObject();
                       ret.put("playing", MusicService.instance != null && MusicService.instance.isPlaying());
                       ret.put("currentMs", MusicService.instance != null ? MusicService.instance.getCurrentMs() : 0);
                       ret.put("durationMs", MusicService.instance != null ? MusicService.instance.getDurationMs() : 0);
                       ret.put("index", MusicService.currentIndex);
+                      ret.put("title", MusicService.instance != null ? MusicService.instance.getCurrentTitle() : "");
+                      ret.put("format", MusicService.instance != null ? MusicService.instance.getCurrentFormat() : "AUDIO");
                       call.resolve(ret);
                   }
 
+                  // 图片/文档导入（供离线资料库与 OCR 识课表使用）
                   @PluginMethod
                   public void pickFiles(PluginCall call) {
                       Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -626,24 +692,15 @@ jobs:
                   @ActivityCallback
                   private void onPickFilesResult(PluginCall call, ActivityResult result) {
                       if (call == null) return;
-                      if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
-                          call.reject("已取消选择");
-                          return;
-                      }
+                      if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) { call.reject("已取消选择"); return; }
                       Intent data = result.getData();
                       ArrayList<Uri> uris = new ArrayList<>();
                       ClipData clip = data.getClipData();
-                      if (clip != null) {
-                          for (int i = 0; i < clip.getItemCount(); i++) {
-                              uris.add(clip.getItemAt(i).getUri());
-                          }
-                      } else if (data.getData() != null) {
-                          uris.add(data.getData());
-                      }
+                      if (clip != null) { for (int i = 0; i < clip.getItemCount(); i++) uris.add(clip.getItemAt(i).getUri()); }
+                      else if (data.getData() != null) uris.add(data.getData());
 
                       File dir = new File(getContext().getFilesDir(), "imported");
                       if (!dir.exists()) dir.mkdirs();
-
                       JSArray arr = new JSArray();
                       for (Uri uri : uris) {
                           try {
@@ -652,27 +709,18 @@ jobs:
                               if (mime == null) mime = "application/octet-stream";
                               String ext = "";
                               int dot = name.lastIndexOf('.');
-                              if (dot > 0 && dot < name.length() - 1) {
-                                  ext = name.substring(dot + 1).toLowerCase(Locale.ROOT);
-                              } else {
+                              if (dot > 0 && dot < name.length() - 1) ext = name.substring(dot + 1).toLowerCase(Locale.ROOT);
+                              else {
                                   String g = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime);
-                                  if (g != null) {
-                                      ext = g.toLowerCase(Locale.ROOT);
-                                      name = name + "." + ext;
-                                  }
+                                  if (g != null) { ext = g.toLowerCase(Locale.ROOT); name = name + "." + ext; }
                               }
-                              String safeName = System.currentTimeMillis() + "_" + name.replaceAll("[^a-zA-Z0-9._-]", "_");
-                              File dest = new File(dir, safeName);
+                              File dest = new File(dir, System.currentTimeMillis() + "_" + name.replaceAll("[^a-zA-Z0-9._-]", "_"));
                               long totalBytes = 0;
                               try (InputStream in = getContext().getContentResolver().openInputStream(uri);
                                    FileOutputStream out = new FileOutputStream(dest)) {
                                   if (in == null) continue;
-                                  byte[] buf = new byte[16384];
-                                  int len;
-                                  while ((len = in.read(buf)) > 0) {
-                                      out.write(buf, 0, len);
-                                      totalBytes += len;
-                                  }
+                                  byte[] buf = new byte[16384]; int len;
+                                  while ((len = in.read(buf)) > 0) { out.write(buf, 0, len); totalBytes += len; }
                               }
                               JSObject obj = new JSObject();
                               obj.put("name", name);
@@ -681,13 +729,9 @@ jobs:
                               obj.put("size", totalBytes);
                               obj.put("localPath", dest.getAbsolutePath());
                               arr.put(obj);
-                          } catch (Exception e) {
-                              e.printStackTrace();
-                          }
+                          } catch (Exception e) { e.printStackTrace(); }
                       }
-                      JSObject ret = new JSObject();
-                      ret.put("files", arr);
-                      call.resolve(ret);
+                      JSObject ret = new JSObject(); ret.put("files", arr); call.resolve(ret);
                   }
 
                   private String queryDisplayName(Uri uri) {
@@ -695,22 +739,26 @@ jobs:
                       try (Cursor c = getContext().getContentResolver().query(uri, null, null, null, null)) {
                           if (c != null && c.moveToFirst()) {
                               int idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                              if (idx >= 0) {
-                                  String n = c.getString(idx);
-                                  if (n != null && !n.trim().isEmpty()) name = n.trim();
-                              }
+                              if (idx >= 0) { String n = c.getString(idx); if (n != null && !n.trim().isEmpty()) name = n.trim(); }
                           }
                       } catch (Exception ignored) {}
                       return name;
                   }
 
+                  private long queryFileSize(Uri uri) {
+                      try (Cursor c = getContext().getContentResolver().query(uri, null, null, null, null)) {
+                          if (c != null && c.moveToFirst()) {
+                              int idx = c.getColumnIndex(OpenableColumns.SIZE);
+                              if (idx >= 0 && !c.isNull(idx)) return c.getLong(idx);
+                          }
+                      } catch (Exception ignored) {}
+                      return 0;
+                  }
+
                   @PluginMethod
                   public void deleteLocalFile(PluginCall call) {
                       String p = call.getString("localPath", "");
-                      if (!p.isEmpty()) {
-                          File f = new File(p);
-                          if (f.exists()) f.delete();
-                      }
+                      if (!p.isEmpty()) { File f = new File(p); if (f.exists()) f.delete(); }
                       call.resolve();
                   }
 
@@ -718,65 +766,38 @@ jobs:
                   public void extractText(PluginCall call) {
                       String path = call.getString("localPath", "");
                       File file = new File(path);
-                      if (path.isEmpty() || !file.exists()) {
-                          call.reject("文件不存在");
-                          return;
-                      }
+                      if (path.isEmpty() || !file.exists()) { call.reject("文件不存在"); return; }
                       String lower = file.getName().toLowerCase(Locale.ROOT);
                       try {
                           if (lower.endsWith(".txt") || lower.endsWith(".csv") || lower.endsWith(".md") || lower.endsWith(".json")) {
                               StringBuilder sb = new StringBuilder();
                               try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
-                                  String line;
-                                  while ((line = br.readLine()) != null) sb.append(line).append("\n");
+                                  String line; while ((line = br.readLine()) != null) sb.append(line).append("\n");
                               }
-                              JSObject ret = new JSObject();
-                              ret.put("text", sb.toString());
-                              call.resolve(ret);
-                              return;
+                              JSObject ret = new JSObject(); ret.put("text", sb.toString()); call.resolve(ret); return;
                           }
                           if (lower.endsWith(".docx") || lower.endsWith(".xlsx") || lower.endsWith(".pptx")) {
-                              JSObject ret = new JSObject();
-                              ret.put("text", extractOfficeXmlText(file));
-                              call.resolve(ret);
-                              return;
+                              JSObject ret = new JSObject(); ret.put("text", extractOfficeXmlText(file)); call.resolve(ret); return;
                           }
                           if (lower.endsWith(".pdf")) {
                               ParcelFileDescriptor pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
                               PdfRenderer renderer = new PdfRenderer(pfd);
-                              if (renderer.getPageCount() == 0) {
-                                  renderer.close();
-                                  pfd.close();
-                                  call.reject("PDF为空");
-                                  return;
-                              }
+                              if (renderer.getPageCount() == 0) { renderer.close(); pfd.close(); call.reject("PDF为空"); return; }
                               PdfRenderer.Page page = renderer.openPage(0);
                               Bitmap bmp = Bitmap.createBitmap(page.getWidth() * 2, page.getHeight() * 2, Bitmap.Config.ARGB_8888);
-                              Canvas canvas = new Canvas(bmp);
-                              canvas.drawColor(Color.WHITE);
+                              Canvas canvas = new Canvas(bmp); canvas.drawColor(Color.WHITE);
                               page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
-                              page.close();
-                              renderer.close();
-                              pfd.close();
-                              runOcr(InputImage.fromBitmap(bmp, 0), call);
-                              return;
+                              page.close(); renderer.close(); pfd.close();
+                              runOcr(InputImage.fromBitmap(bmp, 0), call); return;
                           }
                           runOcr(InputImage.fromFilePath(getContext(), Uri.fromFile(file)), call);
-                      } catch (Exception e) {
-                          call.reject("解析失败: " + e.getMessage());
-                      }
+                      } catch (Exception e) { call.reject("解析失败: " + e.getMessage()); }
                   }
 
                   private void runOcr(InputImage image, PluginCall call) {
-                      TextRecognizer recognizer = TextRecognition.getClient(
-                          new ChineseTextRecognizerOptions.Builder().build()
-                      );
+                      TextRecognizer recognizer = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
                       recognizer.process(image)
-                          .addOnSuccessListener(vt -> {
-                              JSObject ret = new JSObject();
-                              ret.put("text", vt.getText());
-                              call.resolve(ret);
-                          })
+                          .addOnSuccessListener(vt -> { JSObject ret = new JSObject(); ret.put("text", vt.getText()); call.resolve(ret); })
                           .addOnFailureListener(e -> call.reject("OCR失败: " + e.getMessage()));
                   }
 
@@ -788,18 +809,10 @@ jobs:
                               String n = entry.getName();
                               if (n.equals("word/document.xml") || n.equals("xl/sharedStrings.xml") || (n.startsWith("ppt/slides/slide") && n.endsWith(".xml"))) {
                                   ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                                  byte[] buf = new byte[8192];
-                                  int len;
+                                  byte[] buf = new byte[8192]; int len;
                                   while ((len = zis.read(buf)) > 0) baos.write(buf, 0, len);
-                                  String xml = baos.toString("UTF-8")
-                                      .replaceAll("</w:p>|</a:p>|</si>|</row>", "\n")
-                                      .replaceAll("<[^>]+>", " ");
-                                  sb.append(
-                                      xml.replace("&amp;", "&")
-                                         .replace("&lt;", "<")
-                                         .replace("&gt;", ">")
-                                         .replace("&quot;", "\"")
-                                  ).append("\n");
+                                  String xml = baos.toString("UTF-8").replaceAll("</w:p>|</a:p>|</si>|</row>", "\n").replaceAll("<[^>]+>", " ");
+                                  sb.append(xml.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")).append("\n");
                               }
                               zis.closeEntry();
                           }
@@ -809,12 +822,8 @@ jobs:
 
                   @PluginMethod
                   public void setSystemAlarm(PluginCall call) {
-                      Integer hour = call.getInt("hour");
-                      Integer minute = call.getInt("minute");
-                      if (hour == null || minute == null) {
-                          call.reject("缺少时间");
-                          return;
-                      }
+                      Integer hour = call.getInt("hour"), minute = call.getInt("minute");
+                      if (hour == null || minute == null) { call.reject("缺少时间"); return; }
                       Intent intent = new Intent(AlarmClock.ACTION_SET_ALARM);
                       intent.putExtra(AlarmClock.EXTRA_HOUR, hour);
                       intent.putExtra(AlarmClock.EXTRA_MINUTES, minute);
@@ -824,18 +833,11 @@ jobs:
                       JSArray daysArr = call.getArray("days");
                       if (daysArr != null && daysArr.length() > 0) {
                           ArrayList<Integer> days = new ArrayList<>();
-                          for (int i = 0; i < daysArr.length(); i++) {
-                              try { days.add(daysArr.getInt(i)); } catch (JSONException ignored) {}
-                          }
+                          for (int i = 0; i < daysArr.length(); i++) { try { days.add(daysArr.getInt(i)); } catch (JSONException ignored) {} }
                           if (!days.isEmpty()) intent.putIntegerArrayListExtra(AlarmClock.EXTRA_DAYS, days);
                       }
                       intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                      try {
-                          getContext().startActivity(intent);
-                          call.resolve();
-                      } catch (Exception e) {
-                          call.reject(e.getMessage());
-                      }
+                      try { getContext().startActivity(intent); call.resolve(); } catch (Exception e) { call.reject(e.getMessage()); }
                   }
 
                   @PluginMethod
@@ -845,19 +847,13 @@ jobs:
                       intent.putExtra(CalendarContract.Events.TITLE, call.getString("title", "学习日程"));
                       intent.putExtra(CalendarContract.Events.EVENT_LOCATION, call.getString("location", ""));
                       intent.putExtra(CalendarContract.Events.DESCRIPTION, call.getString("description", ""));
-                      Long s = call.getLong("startTimeMs");
-                      Long e = call.getLong("endTimeMs");
+                      Long s = call.getLong("startTimeMs"), e = call.getLong("endTimeMs");
                       if (s != null) intent.putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, s);
                       if (e != null) intent.putExtra(CalendarContract.EXTRA_EVENT_END_TIME, e);
                       String rr = call.getString("rrule", "");
                       if (rr != null && !rr.isEmpty()) intent.putExtra(CalendarContract.Events.RRULE, rr);
                       intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                      try {
-                          getContext().startActivity(intent);
-                          call.resolve();
-                      } catch (Exception ex) {
-                          call.reject(ex.getMessage());
-                      }
+                      try { getContext().startActivity(intent); call.resolve(); } catch (Exception ex) { call.reject(ex.getMessage()); }
                   }
               }
           ''').lstrip()
