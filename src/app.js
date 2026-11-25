@@ -1162,4 +1162,1444 @@ document.querySelectorAll('.ambient-btn').forEach(btn => btn.addEventListener('c
 document.getElementById('stopAmbientBtn').addEventListener('click', stopAmbient);
 document.getElementById('ambientVol').addEventListener('input', (e) => { if (ambGain) ambGain.gain.value = Number(e.target.value); });
 
-const audioPlayer = document.getElementById('audioPlayer'), musicSeek = document.getElementById('musicSeek'), curTimeEl = document.getElementById('curTime'), durTimeEl =
+const audioPlayer = document.getElementById('audioPlayer'), musicSeek = document.getElementById('musicSeek'), curTimeEl = document.getElementById('curTime'), durTimeEl = document.getElementById('durTime'), playPauseBtn = document.getElementById('playPauseBtn'), loopModeBtn = document.getElementById('loopModeBtn');
+let tracks = JSON.parse(localStorage.getItem('tracks_v4') || '[]');
+let onlineMusicHist = JSON.parse(localStorage.getItem('online_music_hist_v1') || '[]');
+let onlinePlayHist = JSON.parse(localStorage.getItem('online_play_hist_v1') || '[]');
+let currentTrackIdx = -1, isPlayingOnlineStream = false, loopMode = 'list', activeEqPreset = 'flat', nativeDurationMs = 0, isUserSeeking = false;
+const EQ_PRESETS = { flat: { b: 0, m: 0, t: 0 }, bass: { b: 9, m: 1, t: -1 }, vocal: { b: -2, m: 6, t: 4 }, sleep: { b: 2, m: -2, t: -7 }, hall: { b: 5, m: 2, t: 6 } };
+
+function fmtSec(sec) { if (!isFinite(sec) || sec < 0) return '00:00'; return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(Math.floor(sec % 60)).padStart(2, '0')}`; }
+function updateTrackUiHeader(title, format) {
+  document.getElementById('nowPlaying').textContent = '🎵 ' + title;
+  const badge = document.getElementById('nowFormatBadge'); badge.textContent = format || 'AUDIO'; badge.style.display = 'inline-block';
+}
+function syncEqToEngine() {
+  const b = Number(document.getElementById('eqBass').value), m = Number(document.getElementById('eqMid').value), t = Number(document.getElementById('eqTreble').value);
+  document.getElementById('eqBassVal').textContent = `${b > 0 ? '+' : ''}${b}dB`;
+  document.getElementById('eqMidVal').textContent = `${m > 0 ? '+' : ''}${m}dB`;
+  document.getElementById('eqTrebleVal').textContent = `${t > 0 ? '+' : ''}${t}dB`;
+  if (Capacitor.isNativePlatform()) NativeTools.audioSetEq({ bass: b, mid: m, treble: t, preset: activeEqPreset }).catch(() => {});
+}
+document.querySelectorAll('#eqPresets .eq-pill').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('#eqPresets .eq-pill').forEach(x => x.classList.remove('active')); btn.classList.add('active');
+  activeEqPreset = btn.dataset.eq; const p = EQ_PRESETS[activeEqPreset] || EQ_PRESETS.flat;
+  document.getElementById('eqBass').value = p.b; document.getElementById('eqMid').value = p.m; document.getElementById('eqTreble').value = p.t; syncEqToEngine();
+}));
+['eqBass', 'eqMid', 'eqTreble'].forEach(id => document.getElementById(id).addEventListener('input', syncEqToEngine));
+document.getElementById('playSpeed').addEventListener('change', (e) => { const sp = Number(e.target.value); if (Capacitor.isNativePlatform()) NativeTools.audioSetSpeed({ speed: sp }).catch(() => {}); else audioPlayer.playbackRate = sp; });
+loopModeBtn.addEventListener('click', () => {
+  if (loopMode === 'list') { loopMode = 'single'; loopModeBtn.textContent = '🔂 单曲'; }
+  else if (loopMode === 'single') { loopMode = 'shuffle'; loopModeBtn.textContent = '🔀 随机'; }
+  else { loopMode = 'list'; loopModeBtn.textContent = '🔁 列表'; }
+  if (Capacitor.isNativePlatform()) NativeTools.audioSetLoopMode({ loopMode }).catch(() => {});
+});
+function saveTracks() { localStorage.setItem('tracks_v4', JSON.stringify(tracks)); renderTracks(); }
+function getTrackSource(t) { return t.uri || t.localPath || t.onlineUrl || t.webUrl || ''; }
+
+// 常驻渲染：在线搜歌历史 + 在线播放历史（仅存文字与链接，0MB音频占用）
+function renderOnlineHistoryBox() {
+  const box = document.getElementById('onlineMusicHistoryBox');
+  if (!box) return;
+  box.innerHTML = '';
+
+  const searchHdr = document.createElement('div');
+  searchHdr.className = 'sub-text';
+  searchHdr.style.cssText = 'display:flex; justify-content:space-between; margin-bottom:4px; margin-top:0;';
+  searchHdr.innerHTML = `<span>🕒 搜歌历史 (${onlineMusicHist.length})</span>${onlineMusicHist.length ? '<button class="btn btn-sm btn-danger" id="clrSearchHistBtn" style="padding:1px 6px; font-size:10px;">清空</button>' : ''}`;
+  box.appendChild(searchHdr);
+
+  if (onlineMusicHist.length) {
+    const pills = document.createElement('div');
+    pills.className = 'day-tabs';
+    pills.style.paddingBottom = '4px';
+    onlineMusicHist.forEach(kw => {
+      const p = document.createElement('button');
+      p.className = 'day-pill';
+      p.textContent = kw;
+      p.onclick = () => { document.getElementById('onlineMusicQuery').value = kw; searchOnlineMusic(kw); };
+      pills.appendChild(p);
+    });
+    box.appendChild(pills);
+    searchHdr.querySelector('#clrSearchHistBtn').onclick = () => {
+      onlineMusicHist = [];
+      localStorage.setItem('online_music_hist_v1', '[]');
+      renderOnlineHistoryBox();
+    };
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'sub-text';
+    empty.textContent = '暂无搜歌历史，搜索任意歌名或歌手后会自动记录在这里';
+    box.appendChild(empty);
+  }
+
+  if (onlinePlayHist.length) {
+    const playHdr = document.createElement('div');
+    playHdr.className = 'sub-text';
+    playHdr.style.cssText = 'display:flex; justify-content:space-between; margin:6px 0 4px; padding-top:6px; border-top:1px dashed var(--border);';
+    playHdr.innerHTML = `<span>🎧 最近在线听过 (${onlinePlayHist.length})</span><button class="btn btn-sm btn-danger" id="clrPlayHistBtn" style="padding:1px 6px; font-size:10px;">清空</button>`;
+    box.appendChild(playHdr);
+    playHdr.querySelector('#clrPlayHistBtn').onclick = () => {
+      onlinePlayHist = [];
+      localStorage.setItem('online_play_hist_v1', '[]');
+      renderOnlineHistoryBox();
+    };
+
+    const pRow = document.createElement('div');
+    pRow.className = 'day-tabs';
+    pRow.style.paddingBottom = '2px';
+    onlinePlayHist.forEach(item => {
+      const b = document.createElement('button');
+      b.className = 'day-pill';
+      b.textContent = `▶️ ${item.title}`;
+      b.onclick = () => playSingleOnlineUrl(item.url, item.title, item.format);
+      pRow.appendChild(b);
+    });
+    box.appendChild(pRow);
+  }
+}
+
+async function playSingleOnlineUrl(url, title, format) {
+  isPlayingOnlineStream = true;
+  currentTrackIdx = -1;
+  renderTracks();
+  updateTrackUiHeader(title, format);
+
+  onlinePlayHist = [{ url, title, format }, ...onlinePlayHist.filter(x => x.url !== url)].slice(0, 12);
+  localStorage.setItem('online_play_hist_v1', JSON.stringify(onlinePlayHist));
+  renderOnlineHistoryBox();
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await NativeTools.audioPlayList({
+        paths: [url], titles: [title], formats: [format || 'STREAM'], index: 0, loopMode: 'single',
+        speed: Number(document.getElementById('playSpeed').value),
+        bass: Number(document.getElementById('eqBass').value), mid: Number(document.getElementById('eqMid').value), treble: Number(document.getElementById('eqTreble').value)
+      });
+      playPauseBtn.textContent = '⏸ 暂停'; applySleepTimer();
+    } catch (e) { alert('在线播放失败（可能受版权限制）：' + e.message); }
+  } else { audioPlayer.src = url; audioPlayer.play().catch(() => {}); }
+}
+
+async function playTrackAt(idx) {
+  if (!tracks.length) return;
+  isPlayingOnlineStream = false;
+  currentTrackIdx = (idx + tracks.length) % tracks.length;
+  const t = tracks[currentTrackIdx];
+  updateTrackUiHeader(t.name, t.format);
+  renderTracks();
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await NativeTools.audioPlayList({
+        paths: tracks.map(getTrackSource), titles: tracks.map(x => x.name || '音乐'), formats: tracks.map(x => x.format || 'AUDIO'),
+        index: currentTrackIdx, loopMode, speed: Number(document.getElementById('playSpeed').value),
+        bass: Number(document.getElementById('eqBass').value), mid: Number(document.getElementById('eqMid').value), treble: Number(document.getElementById('eqTreble').value)
+      });
+      playPauseBtn.textContent = '⏸ 暂停'; applySleepTimer();
+    } catch (err) { playPauseBtn.textContent = '▶️ 播放'; alert('播放失败：' + err.message); }
+  } else { audioPlayer.src = getTrackSource(t); audioPlayer.play().catch(() => {}); }
+}
+
+setInterval(async () => {
+  if (!Capacitor.isNativePlatform() || document.visibilityState !== 'visible') return;
+  try {
+    const st = await NativeTools.audioGetStatus(); if (!st) return;
+    nativeDurationMs = st.durationMs || 0;
+    playPauseBtn.textContent = st.playing ? '⏸ 暂停' : '▶️ 播放';
+    if (!isPlayingOnlineStream && st.index >= 0 && st.index < tracks.length && st.index !== currentTrackIdx) {
+      currentTrackIdx = st.index; updateTrackUiHeader(tracks[currentTrackIdx].name, tracks[currentTrackIdx].format); renderTracks();
+    } else if (st.title && document.getElementById('nowPlaying').textContent !== '🎵 ' + st.title && st.durationMs > 0) {
+      updateTrackUiHeader(st.title, st.format || 'AUDIO');
+    }
+    if (!isUserSeeking && nativeDurationMs > 0) {
+      curTimeEl.textContent = fmtSec((st.currentMs || 0) / 1000);
+      durTimeEl.textContent = fmtSec(nativeDurationMs / 1000);
+      musicSeek.value = ((st.currentMs || 0) / nativeDurationMs) * 100;
+    }
+  } catch {}
+}, 500);
+
+musicSeek.addEventListener('pointerdown', () => { isUserSeeking = true; });
+musicSeek.addEventListener('touchstart', () => { isUserSeeking = true; }, { passive: true });
+musicSeek.addEventListener('change', async () => {
+  const pct = Number(musicSeek.value) / 100;
+  if (Capacitor.isNativePlatform() && nativeDurationMs > 0) await NativeTools.audioSeek({ positionMs: Math.floor(pct * nativeDurationMs) }).catch(() => {});
+  else if (audioPlayer.duration) audioPlayer.currentTime = pct * audioPlayer.duration;
+  isUserSeeking = false;
+});
+playPauseBtn.addEventListener('click', async () => {
+  if (Capacitor.isNativePlatform()) {
+    const st = await NativeTools.audioGetStatus().catch(() => ({ playing: false }));
+    if (st.playing) { await NativeTools.audioPause(); playPauseBtn.textContent = '▶️ 播放'; }
+    else if (st.durationMs > 0) { await NativeTools.audioResume(); playPauseBtn.textContent = '⏸ 暂停'; }
+    else if (tracks.length) playTrackAt(0);
+  } else { if (audioPlayer.paused) audioPlayer.play(); else audioPlayer.pause(); }
+});
+document.getElementById('prevTrackBtn').addEventListener('click', () => playTrackAt(currentTrackIdx - 1));
+document.getElementById('nextTrackBtn').addEventListener('click', () => playTrackAt(currentTrackIdx + 1));
+
+async function searchOnlineMusic(query) {
+  const q = query.trim(), resBox = document.getElementById('onlineMusicResults');
+  resBox.innerHTML = '';
+  if (!q) return;
+
+  onlineMusicHist = [q, ...onlineMusicHist.filter(x => x !== q)].slice(0, 12);
+  localStorage.setItem('online_music_hist_v1', JSON.stringify(onlineMusicHist));
+  renderOnlineHistoryBox();
+
+  resBox.innerHTML = '<div class="sub-text" style="padding:8px;">🔍 正在多源曲库搜歌（网易云 / Apple多区 / Audius）...</div>';
+  const songs = [], seen = new Set();
+  const pushSong = (s) => { const k = `${s.title}-${s.artist}-${s.src}`.toLowerCase(); if (!seen.has(k) && s.url) { seen.add(k); songs.push(s); } };
+
+  try {
+    const ne = await httpGetJson(`https://music.163.com/api/search/get/web?s=${encodeURIComponent(q)}&type=1&offset=0&limit=10`, { Referer: 'https://music.163.com/' });
+    (ne?.result?.songs || []).forEach(s => pushSong({
+      title: s.name, artist: (s.artists || []).map(a => a.name).join('/') || '未知歌手',
+      cover: s.album?.picUrl || '', url: `https://music.163.com/song/media/outer/url?id=${s.id}.mp3`, format: 'MP3', src: '网易云'
+    }));
+  } catch {}
+
+  for (const country of ['HK', 'CN']) {
+    try {
+      const it = await httpGetJson(`https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=song&limit=8&country=${country}`);
+      (it?.results || []).forEach(r => { if (r.previewUrl) pushSong({ title: r.trackName, artist: r.artistName || '歌手', cover: r.artworkUrl100 || '', url: r.previewUrl, format: 'M4A', src: `Apple(${country})` }); });
+    } catch {}
+  }
+
+  try {
+    const au = await httpGetJson(`https://discoveryprovider.audius.co/v1/tracks/search?query=${encodeURIComponent(q)}&app_name=studyhub`);
+    (au?.data || []).slice(0, 4).forEach(t => { if (t.id) pushSong({ title: t.title, artist: t.user?.name || 'Audius', cover: t.artwork?.['150x150'] || '', url: `https://discoveryprovider.audius.co/v1/tracks/${t.id}/stream?app_name=studyhub`, format: 'MP3', src: 'Audius完整' }); });
+  } catch {}
+
+  resBox.innerHTML = '';
+  if (!songs.length) { resBox.innerHTML = '<div class="sub-text" style="padding:8px;">未搜到结果，换个关键词试试~</div>'; return; }
+
+  songs.slice(0, 16).forEach(s => {
+    const row = document.createElement('div'); row.className = 'item-row';
+    row.innerHTML = `
+      <div style="display:flex; gap:10px; align-items:center; flex:1; min-width:0;">
+        ${s.cover ? `<img src="${s.cover}" class="cover-img" />` : `<div class="cover-img" style="display:flex;align-items:center;justify-content:center;">🎵</div>`}
+        <div style="min-width:0;">
+          <div style="font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${s.title}</div>
+          <div class="sub-text"><span class="badge badge-alarm">${s.src}</span><span class="badge badge-fmt">${s.format}</span> ${s.artist}</div>
+        </div>
+      </div>
+      <div style="display:flex; gap:4px; flex-shrink:0;">
+        <button class="btn btn-sm play-online">▶️</button>
+        <button class="btn btn-sm btn-outline fav-online">⭐收藏</button>
+      </div>
+    `;
+    row.querySelector('.play-online').onclick = () => playSingleOnlineUrl(s.url, `${s.title} - ${s.artist}`, s.format);
+    row.querySelector('.fav-online').onclick = async (e) => {
+      tracks.push({ id: Date.now() + Math.random(), name: `${s.title} - ${s.artist}`, format: s.format, size: 0, onlineUrl: s.url, isOnlineRef: true });
+      saveTracks(); await syncPlaylistWithoutInterrupt(); e.target.textContent = '已藏✅'; e.target.disabled = true;
+    };
+    resBox.appendChild(row);
+  });
+}
+
+document.getElementById('searchOnlineMusicBtn').addEventListener('click', () => searchOnlineMusic(document.getElementById('onlineMusicQuery').value));
+document.getElementById('onlineMusicQuery').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchOnlineMusic(e.target.value); });
+document.getElementById('refreshOnlineMusicBtn').addEventListener('click', () => {
+  const cur = document.getElementById('onlineMusicQuery').value.trim() || onlineMusicHist[0] || '华语经典';
+  document.getElementById('onlineMusicQuery').value = cur;
+  searchOnlineMusic(cur); showToast('🔄 已刷新在线曲库');
+});
+
+async function syncPlaylistWithoutInterrupt() {
+  if (!Capacitor.isNativePlatform() || isPlayingOnlineStream) return;
+  try { await NativeTools.audioUpdatePlaylist({ paths: tracks.map(getTrackSource), titles: tracks.map(x => x.name || '音乐'), formats: tracks.map(x => x.format || 'AUDIO') }); } catch {}
+}
+
+function renderTracks() {
+  const list = document.getElementById('trackList');
+  if (!tracks.length) { list.innerHTML = '<div class="sub-text" style="text-align:center; padding:10px;">本地直读路径播放（零复制不占内存），支持 MP3/FLAC/WAV/M4A/OGG 🎶</div>'; return; }
+  list.innerHTML = '';
+  tracks.forEach((t, i) => {
+    const isActive = !isPlayingOnlineStream && i === currentTrackIdx, div = document.createElement('div');
+    div.className = 'item-row' + (isActive ? ' playing-row' : '');
+    const sizeText = t.isOnlineRef ? '在线流 · 0MB占用' : `${((t.size || 0) / 1048576).toFixed(2)} MB · 原路径直读`;
+    div.innerHTML = `<div style="flex:1; cursor:pointer;" class="play-track"><div>${isActive ? '🔊 ' : ''}<span class="badge badge-fmt">${t.format || 'AUDIO'}</span> ${t.name}</div><div class="sub-text">${sizeText}</div></div><div style="display:flex; gap:4px;"><button class="btn btn-sm btn-outline ren-btn">改名</button><button class="btn btn-sm btn-danger del-btn">移除</button></div>`;
+    div.querySelector('.play-track').onclick = () => playTrackAt(i);
+    div.querySelector('.ren-btn').onclick = async () => { const nn = prompt('新歌名：', t.name); if (nn && nn.trim()) { t.name = nn.trim(); saveTracks(); if (i === currentTrackIdx) updateTrackUiHeader(t.name, t.format); await syncPlaylistWithoutInterrupt(); } };
+    div.querySelector('.del-btn').onclick = async () => { tracks = tracks.filter(x => x.id !== t.id); if (i < currentTrackIdx) currentTrackIdx--; else if (i === currentTrackIdx) currentTrackIdx = -1; saveTracks(); await syncPlaylistWithoutInterrupt(); };
+    list.appendChild(div);
+  });
+}
+
+document.getElementById('nativeImportMusicBtn').addEventListener('click', async () => {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const res = await NativeTools.pickAudioRefs({ multiple: true });
+      const added = res.files || []; if (!added.length) return;
+      added.forEach(f => tracks.push({ id: Date.now() + Math.random(), ...f }));
+      saveTracks(); await syncPlaylistWithoutInterrupt();
+      showToast(`✅ 已直读关联 ${added.length} 首（0MB复制，未打断播放）`);
+    } catch (e) { if (!String(e.message).includes('取消')) alert('导入失败：' + e.message); }
+  } else document.getElementById('fallbackMusicInput').click();
+});
+document.getElementById('fallbackMusicInput').addEventListener('change', (e) => {
+  for (const file of e.target.files) tracks.push({ id: Date.now() + Math.random(), name: file.name, format: (file.name.split('.').pop() || 'AUDIO').toUpperCase(), size: file.size, webUrl: URL.createObjectURL(file) });
+  e.target.value = ''; saveTracks();
+});
+
+// ==================== 8. A股专区 + 全球股市 + 可滑动走势图 ====================
+let marketData = { updatedAt: '加载中...', globalNews: [], indices: [], stocks: [] };
+let activeRegion = 'all', activeStockMkt = 'all';
+let customWatchlist = JSON.parse(localStorage.getItem('custom_watchlist_v1') || '[]');
+
+function renderMiniSparkline(history, isUp, height = 40) {
+  if (!history || history.length < 2) return `<div class="sub-text" style="height:${height}px;">暂无走势</div>`;
+  const min = Math.min(...history), max = Math.max(...history), span = max - min || 1, w = 240, pad = 3;
+  const pts = history.map((v, i) => [(pad + (i / (history.length - 1)) * (w - pad * 2)).toFixed(1), (height - pad - ((v - min) / span) * (height - pad * 2)).toFixed(1)]);
+  const line = pts.map(p => p.join(',')).join(' '), area = `${pts[0][0]},${height} ${line} ${pts[pts.length - 1][0]},${height}`;
+  const color = isUp ? '#ef4444' : '#10b981', fill = isUp ? 'rgba(239,68,68,0.14)' : 'rgba(16,185,129,0.14)';
+  return `<svg viewBox="0 0 ${w} ${height}" preserveAspectRatio="none" style="width:100%; height:${height}px; display:block;"><polygon points="${area}" fill="${fill}" /><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
+}
+
+function mountInteractiveChart(container, history, dates, isUp) {
+  container.innerHTML = '';
+  if (!history || history.length < 2) { container.innerHTML = '<div class="sub-text" style="padding:20px; text-align:center;">暂无走势</div>'; return; }
+  const scrubBar = document.createElement('div'); scrubBar.className = 'scrub-bar';
+  const lastIdx = history.length - 1, firstVal = history[0] || 1;
+  const updateReadout = (idx) => {
+    const val = history[idx], dt = dates?.[idx] || `点${idx + 1}`, dp = (((val - firstVal) / firstVal) * 100).toFixed(2), sign = Number(dp) >= 0 ? '+' : '';
+    scrubBar.innerHTML = `<span>🕒 ${dt}</span><span>💰 <strong>${val}</strong></span><span class="${Number(dp) >= 0 ? 'up' : 'down'}">${sign}${dp}%</span>`;
+  };
+  updateReadout(lastIdx);
+  const chartBox = document.createElement('div'); chartBox.className = 'chart-interactive';
+  const w = 320, h = 155, pad = 10, min = Math.min(...history), max = Math.max(...history), span = max - min || 1;
+  const coords = history.map((v, i) => ({ x: pad + (i / (history.length - 1)) * (w - pad * 2), y: h - pad - ((v - min) / span) * (h - pad * 2) }));
+  const line = coords.map(c => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' '), area = `${coords[0].x.toFixed(1)},${h - pad} ${line} ${coords[lastIdx].x.toFixed(1)},${h - pad}`;
+  const color = isUp ? '#ef4444' : '#10b981', fill = isUp ? 'rgba(239,68,68,0.16)' : 'rgba(16,185,129,0.16)';
+  chartBox.innerHTML = `<svg id="scrubSvg" viewBox="0 0 ${w} ${h}" style="width:100%; height:160px; display:block;"><polygon points="${area}" fill="${fill}" /><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.4" /><line id="crossLine" x1="${coords[lastIdx].x}" y1="${pad}" x2="${coords[lastIdx].x}" y2="${h - pad}" stroke="#6366f1" stroke-width="1.4" stroke-dasharray="4 3" /><circle id="crossDot" cx="${coords[lastIdx].x}" cy="${coords[lastIdx].y}" r="5" fill="${color}" stroke="#fff" stroke-width="2" /></svg><div class="time-row"><span>低: ${min.toFixed(2)}</span><span>👆 左右滑动看价格与时间</span><span>高: ${max.toFixed(2)}</span></div>`;
+  const svg = chartBox.querySelector('#scrubSvg'), cl = chartBox.querySelector('#crossLine'), cd = chartBox.querySelector('#crossDot');
+  const handleMove = (cx) => {
+    const rect = svg.getBoundingClientRect(), idx = Math.round(Math.max(0, Math.min(1, (cx - rect.left) / rect.width)) * (history.length - 1)), pt = coords[idx];
+    cl.setAttribute('x1', pt.x); cl.setAttribute('x2', pt.x); cd.setAttribute('cx', pt.x); cd.setAttribute('cy', pt.y); updateReadout(idx);
+  };
+  svg.addEventListener('touchstart', (e) => { if (e.touches[0]) handleMove(e.touches[0].clientX); }, { passive: true });
+  svg.addEventListener('touchmove', (e) => { if (e.touches[0]) { e.preventDefault(); handleMove(e.touches[0].clientX); } }, { passive: false });
+  svg.addEventListener('pointerdown', (e) => handleMove(e.clientX));
+  svg.addEventListener('pointermove', (e) => { if (e.buttons > 0 || e.pointerType === 'mouse') handleMove(e.clientX); });
+  container.appendChild(scrubBar); container.appendChild(chartBox);
+}
+
+async function fetchEastMoneyChart(emSecId, range) {
+  const klt = range === '5d' ? 30 : (range === '1y' ? 102 : 101), lmt = range === '5d' ? 40 : (range === '3mo' ? 65 : (range === '1y' ? 52 : 25));
+  const res = await httpGetJson(`https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${encodeURIComponent(emSecId)}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56&klt=${klt}&fqt=1&end=20500101&lmt=${lmt}`);
+  const klines = res?.data?.klines; if (!klines?.length) throw new Error('东财暂无走势');
+  const history = [], dates = []; let lo = 0, lh = 0, ll = 0, lv = 0;
+  klines.forEach(line => { const [dt, op, cl, hi, l, vol] = line.split(','); dates.push(dt); history.push(Number(Number(cl).toFixed(2))); lo = Number(op); lh = Number(hi); ll = Number(l); lv = Number(vol); });
+  const price = history[history.length - 1], prev = history.length >= 2 ? history[history.length - 2] : (Number(res?.data?.preKPrice) || price);
+  const change = Number((price - prev).toFixed(2)), changePct = prev ? Number(((change / prev) * 100).toFixed(2)) : 0;
+  return { price, change, changePct, history, dates, open: lo, high: lh, low: ll, volume: lv };
+}
+async function fetchYahooChart(symbol, range, interval) {
+  const cData = await httpGetJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`);
+  const r = cData?.chart?.result?.[0]; if (!r) throw new Error('Yahoo 无数据');
+  const meta = r.meta || {}, q = r.indicators?.quote?.[0] || {}, rawCloses = q.close || [], ts = r.timestamp || [], history = [], dates = [];
+  for (let i = 0; i < rawCloses.length; i++) {
+    if (rawCloses[i] != null) {
+      history.push(Number(rawCloses[i].toFixed(2)));
+      const d = new Date((ts[i] || 0) * 1000);
+      dates.push(range === '5d' ? `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+    }
+  }
+  const price = Number((meta.regularMarketPrice || history[history.length - 1] || 0).toFixed(2)), prev = Number((meta.chartPreviousClose || history[0] || price).toFixed(2));
+  const change = Number((price - prev).toFixed(2)), changePct = prev ? Number(((change / prev) * 100).toFixed(2)) : 0;
+  return { price, change, changePct, history, dates, open: Number((q.open?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)), high: Number((q.high?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)), low: Number((q.low?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)), volume: q.volume?.filter(v => v != null).slice(-1)[0] || 0 };
+}
+async function fetchSmartChart(item, range, interval) {
+  if (item.emSecId) { try { return await fetchEastMoneyChart(item.emSecId, range); } catch {} }
+  try { return await fetchYahooChart(item.symbol, range, interval); } catch (e) {
+    const s = item.symbol || '', g = s.endsWith('.SS') ? `1.${s.replace('.SS', '')}` : (s.endsWith('.SZ') ? `0.${s.replace('.SZ', '')}` : (s.endsWith('.HK') ? `116.${s.replace('.HK', '').padStart(5, '0')}` : ''));
+    if (g) return await fetchEastMoneyChart(g, range);
+    throw e;
+  }
+}
+
+function openStockDetailModal(item) {
+  const isUp = (item.changePct || 0) >= 0, sign = isUp ? '+' : '', box = document.createElement('div');
+  const newsHtml = (item.news || []).length ? item.news.map(n => `<a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener"><div style="font-weight:500;">${n.title}</div><div class="sub-text">${n.source || '财经'} · ${n.time || ''}</div></a>`).join('') : '<div class="sub-text">暂无快讯</div>';
+  box.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;"><span style="font-size:26px; font-weight:700;">${item.price ?? '--'}</span><span class="${isUp ? 'up' : 'down'}" style="font-size:15px;">${sign}${item.change ?? 0} (${sign}${item.changePct ?? 0}%)</span></div><div class="day-tabs" id="rangeTabs" style="margin-bottom:6px;"><button class="day-pill" data-r="5d" data-i="30m">5日分时</button><button class="day-pill active" data-r="1mo" data-i="1d">1月</button><button class="day-pill" data-r="3mo" data-i="1d">3月</button><button class="day-pill" data-r="1y" data-i="1wk">1年</button></div><div id="interactiveChartHost" style="margin-bottom:10px;"></div>${item.open ? `<div class="form-grid" style="font-size:12px; background:var(--card-sub); padding:10px; border-radius:8px; margin-bottom:10px;"><div>今开：<strong>${item.open}</strong></div><div>成交量：<strong>${item.volume ? (item.volume / 10000).toFixed(1) + '万' : '--'}</strong></div><div>最高：<strong class="up">${item.high}</strong></div><div>最低：<strong class="down">${item.low}</strong></div></div>` : ''}<div style="font-weight:600; margin-bottom:6px;">📰 每日消息汇总</div><div class="news-box">${newsHtml}</div>`;
+  const host = box.querySelector('#interactiveChartHost');
+  mountInteractiveChart(host, item.history, item.dates, isUp);
+  box.querySelectorAll('#rangeTabs .day-pill').forEach(btn => btn.addEventListener('click', async () => {
+    box.querySelectorAll('#rangeTabs .day-pill').forEach(b => b.classList.remove('active')); btn.classList.add('active');
+    host.innerHTML = '<div class="sub-text" style="padding:30px; text-align:center;">加载走势中...</div>';
+    try { const res = await fetchSmartChart(item, btn.dataset.r, btn.dataset.i); mountInteractiveChart(host, res.history, res.dates, res.changePct >= 0); }
+    catch (e) { host.innerHTML = `<div class="sub-text" style="color:#dc2626; padding:12px;">加载失败：${e.message}</div>`; }
+  }));
+  openModal(`${item.name} (${item.symbol})`, box);
+}
+
+function renderStocks(keyword = '') {
+  document.getElementById('stockUpdated').textContent = '更新时间：' + (marketData.updatedAt || '--');
+  const indices = (marketData.indices || []).filter(i => activeRegion === 'all' || i.region === activeRegion);
+  const idxGrid = document.getElementById('indicesGrid'); idxGrid.innerHTML = '';
+  indices.forEach(i => {
+    const isUp = (i.changePct || 0) >= 0, sign = isUp ? '+' : '', box = document.createElement('div'); box.className = 'idx-box';
+    box.innerHTML = `<div style="font-size:12px; color:var(--sub);">${i.region} · ${i.name}</div><div style="display:flex; justify-content:space-between; align-items:baseline; margin:2px 0;"><span style="font-size:15px; font-weight:700;">${i.price}</span><span class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${sign}${i.changePct}%</span></div>${renderMiniSparkline(i.history, isUp, 36)}`;
+    box.onclick = () => openStockDetailModal(i); idxGrid.appendChild(box);
+  });
+
+  const gnList = document.getElementById('globalNewsList'), gNews = marketData.globalNews || [];
+  gnList.innerHTML = gNews.length ? gNews.map(n => `<a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener"><div style="font-size:13px;">${n.title}</div><div class="sub-text">${n.source} · ${n.time}</div></a>`).join('') : '<div class="sub-text">点击“刷新”获取每日头条</div>';
+
+  const allStocks = [...customWatchlist, ...(marketData.stocks || [])], kw = keyword.trim().toLowerCase();
+  const filtered = allStocks.filter(s => (activeStockMkt === 'all' || s.market === activeStockMkt) && (!kw || (s.name || '').toLowerCase().includes(kw) || (s.symbol || '').toLowerCase().includes(kw) || (s.market || '').toLowerCase().includes(kw)));
+  const list = document.getElementById('stocksList'); list.innerHTML = '';
+  if (!filtered.length) { list.innerHTML = '<div class="sub-text" style="text-align:center; padding:12px;">本地未匹配，请点上方 <strong>🔍 全网搜</strong> 查全球任意股票！</div>'; return; }
+  filtered.forEach(s => {
+    const isUp = (s.changePct || 0) >= 0, sign = isUp ? '+' : '';
+    const newsItems = (s.news || []).slice(0, 4).map(n => `<a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener"><div>${n.title}</div><div class="sub-text">${n.source || ''} · ${n.time || ''}</div></a>`).join('');
+    const div = document.createElement('div'); div.className = 'item-row'; div.style.flexDirection = 'column';
+    div.innerHTML = `<div style="display:flex; justify-content:space-between; width:100%; align-items:center; cursor:pointer;" class="st-head"><div><strong>${s.name}</strong> <span class="badge">${s.market || '全球'}</span><div class="sub-text">${s.symbol} · 点开或停顿0.85秒看大图</div></div><div style="text-align:right;"><div style="font-size:16px; font-weight:700;">${s.price}</div><div class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${sign}${s.changePct}%</div></div></div><div style="width:100%; cursor:pointer;" class="st-chart">${renderMiniSparkline(s.history, isUp, 44)}</div><div class="news-box" style="width:100%;"><div style="font-weight:600; margin-bottom:4px;">📰 每日消息汇总 (${(s.news || []).length}条)</div>${newsItems || '<div class="sub-text">暂无快讯</div>'}</div>`;
+    div.querySelector('.st-head').onclick = () => openStockDetailModal(s);
+    div.querySelector('.st-chart').onclick = () => openStockDetailModal(s);
+    list.appendChild(div);
+  });
+}
+
+function mapEastMoneyToSymbol(item) {
+  const code = String(item.Code || ''), mkt = String(item.MktNum || '');
+  if (mkt === '1') return `${code}.SS`;
+  if (mkt === '0') return `${code}.SZ`;
+  if (mkt === '116') return `${(code.length === 5 && code.startsWith('0') ? code.slice(1) : code.padStart(4, '0'))}.HK`;
+  return code;
+}
+
+async function liveSearchGlobalStock(query) {
+  const q = query.trim(), resBox = document.getElementById('liveSearchResult');
+  if (!q) { resBox.innerHTML = ''; return; }
+  resBox.innerHTML = '<div class="card" style="background:var(--primary-light);">🔍 正在全网检索 A股 / 港股 / 美股 / 全球个股与板块...</div>';
+  const candidates = [], seen = new Set();
+  const pushCand = (c) => { if (c.symbol && !seen.has(c.symbol.toUpperCase())) { seen.add(c.symbol.toUpperCase()); candidates.push(c); } };
+
+  try {
+    const emData = await httpGetJson(`https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=12`);
+    const rows = emData?.QuotationCodeTable?.Data || [];
+    rows.sort((a, b) => (String(a.MktNum) === '90' ? 1 : 0) - (String(b.MktNum) === '90' ? 1 : 0));
+    rows.forEach(r => pushCand({ symbol: mapEastMoneyToSymbol(r), emSecId: r.QuoteID || `${r.MktNum}.${r.Code}`, name: r.Name || r.Code, market: r.SecurityTypeName || 'A股' }));
+  } catch {}
+  try {
+    const yfData = await httpGetJson(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=6&newsCount=2`);
+    (yfData.quotes || []).forEach(qt => { if (qt.symbol) pushCand({ symbol: qt.symbol, emSecId: '', name: qt.shortname || qt.longname || qt.symbol, market: qt.exchDisp || qt.exchange || '全球' }); });
+  } catch {}
+
+  if (!candidates.length) { resBox.innerHTML = '<div class="sub-text" style="padding:8px;">未找到匹配股票。</div>'; return; }
+  resBox.innerHTML = '<div class="sub-text" style="margin-bottom:6px;">🌐 全网检索结果（个股优先）：</div>';
+  candidates.slice(0, 10).forEach(cand => {
+    const row = document.createElement('div'); row.className = 'card';
+    row.style.cssText = 'padding:10px; margin-bottom:8px; border:1px solid var(--border); background:var(--card-sub); cursor:pointer;';
+    row.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:center;"><div><strong>${cand.name}</strong><div class="sub-text">${cand.symbol} · ${cand.market}</div></div><button class="btn btn-sm">看态势图</button></div>`;
+    row.onclick = async () => {
+      row.querySelector('button').textContent = '加载中...';
+      try {
+        const chartInfo = await fetchSmartChart(cand, '1mo', '1d');
+        let newsList = [];
+        try {
+          const xmlText = await httpGetText(`https://news.google.com/rss/search?q=${encodeURIComponent(cand.name + ' 股价 新闻')}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`);
+          const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+          newsList = Array.from(doc.querySelectorAll('item')).slice(0, 6).map(it => ({ title: it.querySelector('title')?.textContent || '', source: it.querySelector('source')?.textContent || '财经资讯', time: (it.querySelector('pubDate')?.textContent || '').slice(0, 22), link: it.querySelector('link')?.textContent || '#' }));
+        } catch {}
+        const fullStock = { ...cand, ...chartInfo, news: newsList };
+        openStockDetailModal(fullStock);
+        customWatchlist = [fullStock, ...customWatchlist.filter(x => x.symbol !== fullStock.symbol)].slice(0, 12);
+        localStorage.setItem('custom_watchlist_v1', JSON.stringify(customWatchlist));
+        renderStocks('');
+      } catch (err) { alert('拉取走势失败：' + err.message); }
+      finally { row.querySelector('button').textContent = '看态势图'; }
+    };
+    resBox.appendChild(row);
+  });
+}
+
+async function fetchMarketData(withToast = false) {
+  const repo = localStorage.getItem('github_stock_repo') || DEFAULT_GITHUB_REPO;
+  document.getElementById('stockUpdated').textContent = `正在同步 ${repo} 股市...`;
+  try {
+    marketData = await httpGetJson(`https://raw.githubusercontent.com/${repo}/main/data/market_data.json?t=${Date.now()}`);
+    localStorage.setItem('cached_market_v3', JSON.stringify(marketData));
+    if (withToast) showToast('✅ 股市与每日新闻已刷新');
+  } catch (e) {
+    const cached = localStorage.getItem('cached_market_v3'); if (cached) marketData = JSON.parse(cached);
+    document.getElementById('stockUpdated').textContent = '同步失败：' + e.message;
+  }
+  renderStocks(document.getElementById('stockSearch').value);
+}
+
+document.querySelectorAll('#regionTabs .day-pill').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('#regionTabs .day-pill').forEach(b => b.classList.remove('active')); btn.classList.add('active');
+  activeRegion = btn.dataset.region; renderStocks(document.getElementById('stockSearch').value);
+}));
+document.querySelectorAll('#stockMarketTabs .day-pill').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('#stockMarketTabs .day-pill').forEach(b => b.classList.remove('active')); btn.classList.add('active');
+  activeStockMkt = btn.dataset.mkt; renderStocks(document.getElementById('stockSearch').value);
+}));
+document.getElementById('refreshStocksBtn').addEventListener('click', () => fetchMarketData(true));
+document.getElementById('stockSearch').addEventListener('input', (e) => renderStocks(e.target.value));
+document.getElementById('stockSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') liveSearchGlobalStock(e.target.value); });
+document.getElementById('liveSearchBtn').addEventListener('click', () => liveSearchGlobalStock(document.getElementById('stockSearch').value));
+document.getElementById('configRepoBtn').addEventListener('click', () => {
+  const val = prompt('GitHub 股市数据仓库（用户名/仓库名）：', localStorage.getItem('github_stock_repo') || DEFAULT_GITHUB_REPO);
+  if (val && val.trim()) { localStorage.setItem('github_stock_repo', val.trim()); fetchMarketData(true); }
+});
+
+// ==================== 9. 词典级翻译 + 零位移双击跳译 ====================
+let transHistory = JSON.parse(localStorage.getItem('trans_hist_v1') || '[]');
+let lastSrcText = '', lastSrcLang = 'en', lastTransResult = '', lastDstLang = 'zh-CN';
+let translateReqSeq = 0;
+
+function decodeHtmlEntities(str) {
+  return (str || '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&apos;|&#39;|&#x27;/gi, "'")
+    .replace(/&quot;|&#34;/gi, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function wrapDoubleTapWords(sentence) {
+  const decoded = decodeHtmlEntities(sentence);
+  return decoded.split(/([A-Za-z]+(?:['’-][A-Za-z]+)*)/g).map((part, idx) => {
+    if (idx % 2 === 1) {
+      const cleanWord = part.replace(/’/g, "'");
+      const safeAttr = cleanWord.replace(/"/g, '&quot;');
+      const safeText = part.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `<span class="tap-word" data-word="${safeAttr}">${safeText}</span>`;
+    }
+    return part.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }).join('');
+}
+
+function detectSimpleLang(text, selectedFrom) {
+  if (selectedFrom && selectedFrom !== 'auto') return selectedFrom;
+  if (/[\u4e00-\u9fa5]/.test(text)) return 'zh-CN';
+  if (/[\u3040-\u30ff]/.test(text)) return 'ja';
+  if (/[\uac00-\ud7af]/.test(text)) return 'ko';
+  return 'en';
+}
+
+function renderTransHistory() {
+  const list = document.getElementById('transHistory');
+  if (!transHistory.length) { list.innerHTML = '<div class="sub-text" style="text-align:center;">暂无查词记录</div>'; return; }
+  list.innerHTML = '';
+  transHistory.slice(0, 15).forEach(h => {
+    const div = document.createElement('div'); div.className = 'item-row'; div.style.cursor = 'pointer';
+    div.innerHTML = `<div style="flex:1;"><div style="font-size:13px; font-weight:500;">${h.src}</div><div class="sub-text" style="color:var(--primary);">${h.dst}</div></div>`;
+    div.onclick = () => { document.getElementById('transInput').value = h.src; doTranslate(false); };
+    list.appendChild(div);
+  });
+}
+
+async function fetchRichDictionary(query) {
+  const rich = { ukPhone: '', usPhone: '', meanings: [], phrases: [], examples: [] };
+  try {
+    const yd = await httpGetJson(`https://dict.youdao.com/jsonapi?q=${encodeURIComponent(query)}`);
+    const ecWord = yd?.ec?.word?.[0];
+    if (ecWord) {
+      rich.ukPhone = ecWord.ukphone || ''; rich.usPhone = ecWord.usphone || '';
+      (ecWord.trs || []).forEach(tr => { const l = tr?.tr?.[0]?.l?.i?.[0]; if (l) rich.meanings.push(l); });
+    }
+    const ceWord = yd?.ce?.word?.[0];
+    if (ceWord && !rich.meanings.length) {
+      if (ceWord.phone) rich.usPhone = ceWord.phone;
+      (ceWord.trs || []).forEach(tr => {
+        const txt = (tr?.tr?.[0]?.l?.i || []).map(p => typeof p === 'string' ? p : (p['#text'] || '')).join('').trim();
+        if (txt) rich.meanings.push(txt);
+      });
+    }
+    (yd?.phrs?.phrs || []).slice(0, 8).forEach(p => { const en = p?.phr?.headword?.l?.i, zh = p?.phr?.trs?.[0]?.tr?.l?.i; if (en && zh) rich.phrases.push({ en, zh }); });
+    (yd?.blng_sents_part?.['sentence-pair'] || []).slice(0, 6).forEach(sp => {
+      const rawEn = sp.sentence || sp['sentence-eng'] || '';
+      const rawZh = sp['sentence-translation'] || '';
+      const en = rawEn.replace(/<[^>]+>/g, ''), zh = rawZh.replace(/<[^>]+>/g, '');
+      if (en) rich.examples.push({ en, zh });
+    });
+  } catch {}
+  if (/^[a-zA-Z'-]+$/.test(query) && (!rich.usPhone || !rich.examples.length)) {
+    try {
+      const fd = await httpGetJson(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(query)}`);
+      const entry = Array.isArray(fd) ? fd[0] : null;
+      if (entry) {
+        if (!rich.usPhone) rich.usPhone = entry.phonetic || entry.phonetics?.find(p => p.text)?.text || '';
+        (entry.meanings || []).forEach(m => (m.definitions || []).slice(0, 2).forEach(def => { if (def.example && rich.examples.length < 6) rich.examples.push({ en: def.example, zh: `(${m.partOfSpeech}) ${def.definition}` }); }));
+      }
+    } catch {}
+  }
+  return rich;
+}
+
+function renderRichDictBox(rich) {
+  const box = document.getElementById('dictRichBox');
+  box.innerHTML = '';
+  if (!rich.ukPhone && !rich.usPhone && !rich.meanings.length && !rich.phrases.length && !rich.examples.length) return;
+  if (rich.ukPhone || rich.usPhone) {
+    const phDiv = document.createElement('div'); phDiv.className = 'dict-sec';
+    phDiv.innerHTML = `<div class="dict-sec-title">🔤 音标发音</div><div style="display:flex; gap:10px; flex-wrap:wrap; font-size:13px;">${rich.ukPhone ? `<span class="badge">英 /${rich.ukPhone.replace(/\//g, '')}/</span>` : ''}${rich.usPhone ? `<span class="badge badge-alarm">美 /${rich.usPhone.replace(/\//g, '')}/</span>` : ''}</div>`;
+    box.appendChild(phDiv);
+  }
+  if (rich.meanings.length) {
+    const mDiv = document.createElement('div'); mDiv.className = 'dict-sec';
+    mDiv.innerHTML = `<div class="dict-sec-title">📖 词性释义</div>` + rich.meanings.slice(0, 6).map(m => `<div style="font-size:13px; margin-bottom:4px;">• ${m}</div>`).join('');
+    box.appendChild(mDiv);
+  }
+  if (rich.phrases.length) {
+    const pDiv = document.createElement('div'); pDiv.className = 'dict-sec';
+    pDiv.innerHTML = `<div class="dict-sec-title">🔗 常用短语（点击或停顿0.85秒查词）</div>`;
+    rich.phrases.forEach(ph => {
+      const chip = document.createElement('span'); chip.className = 'phrase-chip';
+      chip.innerHTML = `<strong>${ph.en}</strong> <span class="sub-text">${ph.zh}</span>`;
+      chip.onclick = () => { document.getElementById('transInput').value = ph.en; doTranslate(false); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+      pDiv.appendChild(chip);
+    });
+    box.appendChild(pDiv);
+  }
+  if (rich.examples.length) {
+    const eDiv = document.createElement('div'); eDiv.className = 'dict-sec';
+    eDiv.innerHTML = `<div class="dict-sec-title">💬 双语例句（👆 双击任意英文单词直接跳译，或停顿0.85秒）</div>`;
+    rich.examples.forEach(ex => {
+      const item = document.createElement('div'); item.className = 'example-item';
+      item.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;"><div style="flex:1;">${wrapDoubleTapWords(ex.en)}</div><button class="btn btn-sm btn-outline ex-speak" title="朗读例句">🔊</button></div>${ex.zh ? `<div class="sub-text">${ex.zh}</div>` : ''}`;
+      item.querySelector('.ex-speak').onclick = () => speakSingle(decodeHtmlEntities(ex.en), 'en');
+      eDiv.appendChild(item);
+    });
+    box.appendChild(eDiv);
+  }
+}
+
+let primedWordEl = null;
+let primedWordText = '';
+let primedWordTime = 0;
+let primedClearTimer = null;
+let wordTouchStartX = 0;
+let wordTouchStartY = 0;
+let wordTouchStartScrollY = 0;
+let lastTouchWordTime = 0;
+let lastWordJumpAt = 0;
+
+function findTapWord(target) {
+  const el = target instanceof Element ? target : target?.parentElement;
+  return el ? el.closest('.tap-word') : null;
+}
+
+function clearPrimedWord() {
+  if (primedClearTimer) { clearTimeout(primedClearTimer); primedClearTimer = null; }
+  if (primedWordEl) primedWordEl.classList.remove('primed');
+  primedWordEl = null;
+  primedWordText = '';
+  primedWordTime = 0;
+}
+
+function jumpTranslateWord(wordEl) {
+  const raw = wordEl?.dataset?.word || wordEl?.textContent || '';
+  const w = raw.trim().replace(/^['"-]+|['"-]+$/g, '');
+  if (!w) return;
+
+  lastWordJumpAt = Date.now();
+  clearPrimedWord();
+  cancelSlideDwell();
+  hideFingerOrb();
+
+  wordEl.classList.add('flash');
+  setTimeout(() => wordEl.classList.remove('flash'), 260);
+  if (navigator.vibrate) navigator.vibrate(18);
+  showToast(`🔍 正在跳转翻译「${w}」`, 1600);
+
+  const inputEl = document.getElementById('transInput');
+  const outEl = document.getElementById('transOutput');
+  inputEl.value = w;
+  document.getElementById('transFrom').value = 'en';
+  document.getElementById('transTo').value = 'zh-CN';
+
+  // 立刻滚回顶部查词区并给译文框轻微高亮反馈
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (outEl) {
+    outEl.classList.remove('jump-pulse');
+    requestAnimationFrame(() => outEl.classList.add('jump-pulse'));
+    setTimeout(() => outEl.classList.remove('jump-pulse'), 650);
+  }
+  doTranslate(false);
+}
+
+function handleTapWordActivation(span, evt) {
+  const raw = span?.dataset?.word || span?.textContent || '';
+  const w = raw.trim().replace(/^['"-]+|['"-]+$/g, '');
+  if (!w) return;
+  const now = Date.now();
+  if (now - lastWordJumpAt < 400) return;
+
+  const isSameWord = (span === primedWordEl) || (primedWordText && w.toLowerCase() === primedWordText.toLowerCase());
+  if (isSameWord && now - primedWordTime < 750) {
+    if (evt && evt.cancelable) evt.preventDefault();
+    jumpTranslateWord(span);
+  } else {
+    clearPrimedWord();
+    primedWordEl = span;
+    primedWordText = w;
+    primedWordTime = now;
+    span.classList.add('primed');
+    showToast(`👆 再点一下「${w}」跳转查词`, 1100);
+    primedClearTimer = setTimeout(() => {
+      if (primedWordEl === span) clearPrimedWord();
+    }, 780);
+  }
+}
+
+const dictRichBoxEl = document.getElementById('dictRichBox');
+dictRichBoxEl.addEventListener('touchstart', (e) => {
+  if (e.touches[0]) {
+    wordTouchStartX = e.touches[0].clientX;
+    wordTouchStartY = e.touches[0].clientY;
+    wordTouchStartScrollY = window.scrollY;
+  }
+}, { passive: true });
+
+dictRichBoxEl.addEventListener('touchend', (e) => {
+  const span = findTapWord(e.target);
+  if (!span) return;
+  const t = e.changedTouches[0];
+  if (t && Math.hypot(t.clientX - wordTouchStartX, t.clientY - wordTouchStartY) > 28) return;
+  if (Math.abs(window.scrollY - wordTouchStartScrollY) > 10) return;
+  lastTouchWordTime = Date.now();
+  handleTapWordActivation(span, e);
+}, { passive: false });
+
+// 兼容桌面鼠标/触控板两次单击与原生 dblclick
+dictRichBoxEl.addEventListener('click', (e) => {
+  if (Date.now() - lastTouchWordTime < 450) return;
+  const span = findTapWord(e.target);
+  if (span) handleTapWordActivation(span, e);
+});
+
+dictRichBoxEl.addEventListener('dblclick', (e) => {
+  if (Date.now() - lastWordJumpAt < 400) return;
+  const span = findTapWord(e.target);
+  if (span) {
+    e.preventDefault();
+    jumpTranslateWord(span);
+  }
+});
+
+async function speakSingle(text, lang) {
+  if (!text) return;
+  if (Capacitor.isNativePlatform()) { try { await NativeTools.speakText({ text, lang }); } catch (e) { alert('朗读失败：' + e.message); } }
+  else if ('speechSynthesis' in window) { const u = new SpeechSynthesisUtterance(text); u.lang = lang; speechSynthesis.speak(u); }
+}
+
+async function doTranslate(withToast = false) {
+  const text = document.getElementById('transInput').value.trim();
+  if (!text) { if (withToast) showToast('请先输入要翻译的内容'); return; }
+  const reqSeq = ++translateReqSeq;
+  const from = document.getElementById('transFrom').value;
+  let to = document.getElementById('transTo').value;
+  if (from === 'auto' && to === 'en' && /^[a-zA-Z0-9\s.,!?;:'"()-]+$/.test(text)) { to = 'zh-CN'; document.getElementById('transTo').value = 'zh-CN'; }
+  const srcLang = detectSimpleLang(text, from);
+  lastSrcText = text; lastSrcLang = srcLang; lastDstLang = to;
+
+  const outEl = document.getElementById('transOutput');
+  outEl.textContent = '🌐 正在查词与翻译...';
+  document.getElementById('dictRichBox').innerHTML = '';
+  clearPrimedWord();
+
+  let translated = '';
+  const richPromise = text.length <= 45 ? fetchRichDictionary(text) : Promise.resolve(null);
+  try {
+    const g = await httpGetJson(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(from)}&tl=${encodeURIComponent(to)}&dt=t&q=${encodeURIComponent(text)}`);
+    if (Array.isArray(g?.[0])) translated = g[0].map(seg => seg?.[0] || '').join('');
+  } catch {}
+  if (!translated) {
+    try {
+      const mm = await httpGetJson(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text.slice(0, 480))}&langpair=${encodeURIComponent(srcLang + '|' + to)}`);
+      translated = mm?.responseData?.translatedText || '';
+    } catch {}
+  }
+  const rich = await richPromise;
+  if (reqSeq !== translateReqSeq) return; // 防止旧请求覆盖新跳转查词结果
+
+  if (!translated && rich?.meanings?.length) translated = rich.meanings[0];
+  if (!translated) { outEl.textContent = '翻译失败，请检查网络连接后重试。'; return; }
+
+  lastTransResult = translated;
+  outEl.textContent = translated;
+  if (rich) renderRichDictBox(rich);
+  if (withToast) showToast('✅ 翻译结果已刷新');
+
+  transHistory = [{ src: text.slice(0, 120), dst: translated.slice(0, 160) }, ...transHistory.filter(x => x.src !== text.slice(0, 120))].slice(0, 20);
+  localStorage.setItem('trans_hist_v1', JSON.stringify(transHistory));
+  renderTransHistory();
+}
+
+document.getElementById('doTranslateBtn').addEventListener('click', () => doTranslate(false));
+document.getElementById('refreshTransBtn').addEventListener('click', () => doTranslate(true));
+document.getElementById('clearTransBtn').addEventListener('click', () => {
+  document.getElementById('transInput').value = ''; document.getElementById('transOutput').textContent = '译文将显示在这里...';
+  document.getElementById('dictRichBox').innerHTML = ''; lastSrcText = ''; lastTransResult = ''; clearPrimedWord();
+});
+document.getElementById('swapLangBtn').addEventListener('click', () => {
+  const f = document.getElementById('transFrom'), t = document.getElementById('transTo');
+  if (f.value === 'auto') { f.value = t.value; t.value = t.value === 'zh-CN' ? 'en' : 'zh-CN'; }
+  else { const tmp = f.value; f.value = t.value; t.value = tmp; }
+});
+document.getElementById('copyTransBtn').addEventListener('click', async () => {
+  if (!lastTransResult) return;
+  try { await navigator.clipboard.writeText(lastTransResult); showToast('📋 已复制译文'); }
+  catch { prompt('请长按复制译文：', lastTransResult); }
+});
+document.getElementById('speakSrcBtn').addEventListener('click', () => speakSingle(lastSrcText, lastSrcLang));
+document.getElementById('speakTransBtn').addEventListener('click', () => speakSingle(lastTransResult, lastDstLang));
+document.getElementById('speakBothBtn').addEventListener('click', async () => {
+  if (!lastSrcText || !lastTransResult) return;
+  if (Capacitor.isNativePlatform()) {
+    try { await NativeTools.speakPair({ text1: lastSrcText, lang1: lastSrcLang, text2: lastTransResult, lang2: lastDstLang }); }
+    catch (e) { alert('连读失败：' + e.message); }
+  } else { speakSingle(lastSrcText, lastSrcLang); setTimeout(() => speakSingle(lastTransResult, lastDstLang), 1500); }
+});
+document.getElementById('clearTransHistBtn').addEventListener('click', () => { transHistory = []; localStorage.setItem('trans_hist_v1', '[]'); renderTransHistory(); });
+document.getElementById('ocrTranslateBtn').addEventListener('click', async () => {
+  if (!Capacitor.isNativePlatform()) return alert('请在安卓 App 中使用识图翻译！');
+  try {
+    const res = await NativeTools.pickFiles({ accept: '*/*', multiple: false });
+    const f = res.files?.[0]; if (!f) return;
+    document.getElementById('transOutput').textContent = '🧠 正在离线识别文字...';
+    const ex = await NativeTools.extractText({ localPath: f.localPath });
+    if (ex.text) { document.getElementById('transInput').value = ex.text; await doTranslate(false); }
+    else alert('未识别到文字');
+  } catch (e) { if (!String(e.message).includes('取消')) alert('识图翻译失败：' + e.message); }
+});
+
+// ==================== 10. 启动初始化 & 每次进App自动更新 ====================
+let lastAutoSyncTime = 0;
+async function autoSyncOnAppEnter() {
+  lastAutoSyncTime = Date.now();
+  await Promise.allSettled([
+    detectDeviceAndNetworkZones(false),
+    fetchMarketData(false)
+  ]);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && Date.now() - lastAutoSyncTime > 45000) {
+    autoSyncOnAppEnter();
+  }
+});
+
+(async function bootstrap() {
+  applyAppearance();
+  updateNavIndicatorPosition(0);
+  updateLiveClock();
+  setInterval(updateLiveClock, 1000);
+  await initNotificationChannels();
+  renderDayTabs();
+  renderCourses();
+  renderExams();
+  renderFiles();
+  renderTracks();
+  renderOnlineHistoryBox();
+  renderTransHistory();
+  await autoSyncOnAppEnter();
+})();
+```
+
+---
+
+### 📄 文件 2：完整替换 `www/index.html`
+
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>学财助手 Pro</title>
+  <style>
+    :root {
+      --primary: #4f46e5;
+      --primary-light: #eef2ff;
+      --bg: #f3f4f6;
+      --card: #ffffff;
+      --card-sub: #f9fafb;
+      --text: #111827;
+      --sub: #6b7280;
+      --up: #ef4444;
+      --down: #10b981;
+      --border: #e5e7eb;
+      --app-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --app-size: 14px;
+    }
+
+    body.dark-mode {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --card-sub: #0f172a;
+      --text: #f1f5f9;
+      --sub: #94a3b8;
+      --border: #334155;
+      --primary-light: rgba(99, 102, 241, 0.22);
+    }
+
+    body.glass-mode {
+      background: linear-gradient(135deg, #e0e7ff 0%, #f3e8ff 50%, #dbeafe 100%) fixed;
+    }
+    body.dark-mode.glass-mode {
+      background: linear-gradient(135deg, #090d16 0%, #1e1b4b 50%, #0f172a 100%) fixed;
+    }
+    body.glass-mode .card,
+    body.glass-mode nav,
+    body.glass-mode .modal-body {
+      background: rgba(255, 255, 255, 0.68);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.45);
+    }
+    body.dark-mode.glass-mode .card,
+    body.dark-mode.glass-mode nav,
+    body.dark-mode.glass-mode .modal-body {
+      background: rgba(30, 41, 59, 0.68);
+      border: 1px solid rgba(148, 163, 184, 0.22);
+    }
+    body.glass-mode header {
+      background: color-mix(in srgb, var(--primary) 82%, transparent);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { overscroll-behavior-y: contain; }
+    body {
+      margin: 0;
+      font-family: var(--app-font);
+      font-size: var(--app-size);
+      background: var(--bg);
+      color: var(--text);
+      padding-bottom: 78px;
+      transition: background 0.25s, color 0.25s;
+    }
+
+    /* 顶栏禁用系统下拉手势，确保上方滑动毛玻璃100%跟手 */
+    header {
+      position: sticky; top: 0; z-index: 20;
+      background: var(--primary); color: #fff;
+      padding: 13px 14px; display: flex; justify-content: space-between; align-items: center; gap: 6px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .hdr-btn {
+      background: rgba(255, 255, 255, 0.22); border: none; color: #fff;
+      padding: 6px 10px; border-radius: 8px; font-size: 12px; cursor: pointer; white-space: nowrap;
+      touch-action: none;
+    }
+
+    .page { display: none; padding: 12px; max-width: 720px; margin: 0 auto; }
+    .page.active { display: block; }
+    .card {
+      background: var(--card); border-radius: 14px; padding: 14px;
+      margin-bottom: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    }
+    .card-title { font-size: 1.07em; font-weight: 600; margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .form-full { grid-column: 1 / -1; }
+    input, select, textarea {
+      width: 100%; padding: 9px 10px; border: 1px solid var(--border);
+      border-radius: 8px; font-size: 1em; background: var(--card-sub); color: var(--text);
+      font-family: inherit;
+    }
+    textarea { resize: vertical; min-height: 70px; }
+    .btn {
+      background: var(--primary); color: #fff; border: none; border-radius: 8px;
+      padding: 9px 12px; font-size: 0.93em; font-weight: 500; cursor: pointer; font-family: inherit;
+    }
+    .btn-sm { padding: 5px 9px; font-size: 12px; }
+    .btn-outline { background: var(--primary-light); color: var(--primary); }
+    .btn-warn { background: #fef3c7; color: #b45309; }
+    .btn-green { background: #d1fae5; color: #065f46; }
+    .btn-danger { background: #fee2e2; color: #dc2626; }
+    body.dark-mode .btn-warn { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+    body.dark-mode .btn-green { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+    body.dark-mode .btn-danger { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+
+    .day-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
+    .day-tabs::-webkit-scrollbar { display: none; }
+    .day-pill {
+      flex: 0 0 auto; padding: 6px 12px; border-radius: 20px;
+      background: var(--card-sub); color: var(--text); font-size: 12px; border: 1px solid var(--border); cursor: pointer;
+    }
+    .day-pill.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .item-row {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      padding: 10px 6px; border-bottom: 1px solid var(--border); gap: 8px; border-radius: 8px;
+    }
+    .item-row:last-child { border-bottom: none; }
+    .item-row.playing-row { background: var(--primary-light); }
+    .badge {
+      display: inline-block; padding: 2px 6px; border-radius: 6px;
+      font-size: 11px; background: var(--primary-light); color: var(--primary); margin-right: 4px; font-weight: 600;
+    }
+    .badge-alarm { background: #fef3c7; color: #b45309; }
+    .badge-urgent { background: #fee2e2; color: #b91c1c; }
+    .badge-fmt { background: #111827; color: #fff; font-size: 10px; letter-spacing: 0.4px; }
+    body.dark-mode .badge-fmt { background: #475569; }
+    .sub-text { font-size: 12px; color: var(--sub); margin-top: 3px; line-height: 1.45; }
+
+    /* 今日双时区时钟 + 互动天气仪表盘 */
+    .dash-card {
+      background: linear-gradient(135deg, var(--primary), #1d4ed8);
+      color: #fff; border-radius: 16px; padding: 14px; margin-bottom: 12px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    }
+    .dash-head-bar { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 6px; }
+    .city-bar { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; flex: 1; scrollbar-width: none; }
+    .city-bar::-webkit-scrollbar { display: none; }
+    .city-pill {
+      flex: 0 0 auto; padding: 4px 10px; border-radius: 16px; font-size: 12px;
+      background: rgba(255, 255, 255, 0.2); color: #fff; border: 1px solid rgba(255, 255, 255, 0.25); cursor: pointer;
+    }
+    .city-pill.active { background: #fff; color: #1e3a8a; font-weight: 600; }
+    .dual-tz-bar {
+      display: none; font-size: 11px; background: rgba(0, 0, 0, 0.22);
+      border-radius: 8px; padding: 6px 9px; margin-bottom: 8px;
+      justify-content: space-between; gap: 8px; flex-wrap: wrap;
+    }
+    .dual-tz-bar.show { display: flex; }
+    .dash-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+    .clock-big { font-size: 30px; font-weight: 700; letter-spacing: 1px; line-height: 1.1; }
+    .dash-sub { font-size: 12px; opacity: 0.92; margin-top: 3px; }
+    .weather-box { text-align: right; }
+    .weather-temp { font-size: 26px; font-weight: 700; line-height: 1.1; }
+
+    .weather-section-label { font-size: 11px; opacity: 0.85; margin: 10px 0 5px; display: flex; justify-content: space-between; }
+    .scroll-strip {
+      display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px;
+      scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch;
+    }
+    .scroll-strip::-webkit-scrollbar { height: 3px; }
+    .scroll-strip::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.35); border-radius: 4px; }
+    .hour-chip, .day-chip {
+      flex: 0 0 auto; scroll-snap-align: start;
+      background: rgba(255, 255, 255, 0.16); border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 10px; padding: 7px 9px; text-align: center; cursor: pointer;
+    }
+    .hour-chip { min-width: 60px; font-size: 11px; }
+    .day-chip { min-width: 78px; font-size: 11px; }
+    .hour-chip.selected, .day-chip.selected { background: rgba(255, 255, 255, 0.36); border-color: #fff; }
+    .advice-box {
+      margin-top: 10px; padding: 9px 10px; border-radius: 10px;
+      background: rgba(0, 0, 0, 0.18); font-size: 12px; line-height: 1.55;
+    }
+
+    /* 股市与交互走势图 */
+    .idx-scroll { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .idx-box { background: var(--card-sub); border: 1px solid var(--border); border-radius: 10px; padding: 10px; cursor: pointer; }
+    .up { color: var(--up); font-weight: 600; }
+    .down { color: var(--down); font-weight: 600; }
+    .news-box { margin-top: 8px; padding: 10px; background: var(--card-sub); border-radius: 8px; border-left: 3px solid var(--primary); font-size: 12px; }
+    .news-link { display: block; color: var(--text); text-decoration: none; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+    .news-link:last-child { border-bottom: none; }
+    .search-row { display: flex; gap: 6px; margin-bottom: 10px; }
+    .chart-interactive { position: relative; width: 100%; touch-action: none; user-select: none; background: var(--card-sub); border-radius: 8px; padding: 6px; border: 1px solid var(--border); }
+    .scrub-bar { display: flex; justify-content: space-between; align-items: center; font-size: 12px; background: var(--primary-light); color: var(--text); padding: 6px 10px; border-radius: 8px; margin-bottom: 6px; font-weight: 500; }
+
+    /* 音乐、历史记录与音效 */
+    .music-hist-box {
+      background: var(--card-sub);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+    }
+    .ambient-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .ambient-btn { padding: 12px 8px; border-radius: 12px; border: 1px solid var(--border); background: var(--card-sub); color: var(--text); font-size: 13px; text-align: center; cursor: pointer; }
+    .ambient-btn.playing { background: var(--primary-light); border-color: var(--primary); color: var(--primary); font-weight: 600; }
+    .player-panel { background: var(--card-sub); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 10px; }
+    .player-controls { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 10px; }
+    .time-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--sub); }
+    .eq-box { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+    .eq-pills { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px; }
+    .eq-pill { flex: 0 0 auto; padding: 5px 10px; border-radius: 16px; font-size: 12px; border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; }
+    .eq-pill.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .eq-slider-row { display: grid; grid-template-columns: 46px 1fr 38px; align-items: center; gap: 6px; font-size: 12px; margin-top: 4px; }
+    .cover-img { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; flex-shrink: 0; background: var(--border); }
+
+    /* 词典与零位移双击跳译单词 */
+    .trans-out {
+      min-height: 76px; background: var(--card-sub); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px; font-size: 1.08em; line-height: 1.6;
+      white-space: pre-wrap; word-break: break-word;
+      transition: box-shadow 0.25s ease, border-color 0.25s ease;
+    }
+    .trans-out.jump-pulse {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--primary-light);
+    }
+    .dict-sec { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
+    .dict-sec-title { font-size: 13px; font-weight: 600; color: var(--primary); margin-bottom: 6px; }
+    .phrase-chip {
+      display: inline-block; margin: 3px 4px 3px 0; padding: 4px 8px; border-radius: 8px;
+      background: var(--card-sub); border: 1px solid var(--border); font-size: 12px; cursor: pointer;
+    }
+    .example-item { padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 13px; line-height: 1.8; }
+    .example-item:last-child { border-bottom: none; }
+    .tap-word {
+      display: inline-block; padding: 1px 3px; margin: 0 0.5px; border-radius: 5px; cursor: pointer;
+      user-select: none; -webkit-user-select: none; touch-action: manipulation;
+      transition: background 0.12s, color 0.12s, box-shadow 0.12s;
+    }
+    /* 严禁改变 font-weight，确保首次点击绝不导致换行位移、第二下稳稳命中 */
+    .tap-word.primed {
+      background: var(--primary-light); color: var(--primary);
+      box-shadow: inset 0 0 0 1px var(--primary);
+    }
+    .tap-word.flash { background: var(--primary); color: #fff; }
+
+    /* 颜色选择圆点 */
+    .swatch-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .swatch { width: 30px; height: 30px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--border); cursor: pointer; }
+    .swatch.active { box-shadow: 0 0 0 3px var(--text); }
+
+    /* 弹窗与响铃 */
+    .thumb { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+    .modal { display: none; position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, 0.72); justify-content: center; align-items: center; padding: 14px; }
+    .modal.open { display: flex; }
+    .modal-body { background: var(--card); color: var(--text); border-radius: 14px; padding: 14px; width: 100%; max-width: 560px; max-height: 88vh; overflow: auto; }
+    #ringingOverlay {
+      display: none; position: fixed; inset: 0; z-index: 999;
+      background: linear-gradient(160deg, #dc2626, #7c2d12);
+      color: #fff; flex-direction: column; justify-content: center; align-items: center; padding: 24px; text-align: center;
+    }
+    #ringingOverlay.active { display: flex; }
+    .ring-icon { font-size: 72px; animation: shake 0.4s infinite; }
+    @keyframes shake { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-16deg)} 75%{transform:rotate(16deg)} }
+
+    /* 60/120fps 纯GPU跟手毛玻璃光球（无transform过渡，零延迟跟手） */
+    #fingerGlassOrb {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 56px;
+      height: 56px;
+      margin-left: -28px;
+      margin-top: -28px;
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 949;
+      opacity: 0;
+      transform: translate3d(-120px, -120px, 0);
+      background: radial-gradient(circle, rgba(255, 255, 255, 0.52) 0%, rgba(99, 102, 241, 0.16) 68%, transparent 100%);
+      backdrop-filter: blur(6px) saturate(160%);
+      -webkit-backdrop-filter: blur(6px) saturate(160%);
+      border: 1.5px solid rgba(255, 255, 255, 0.74);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+      contain: layout style paint;
+      will-change: transform, opacity;
+      transition: opacity 0.08s linear;
+    }
+    #fingerGlassOrb.visible { opacity: 1; }
+
+    /* 吸附按钮毛玻璃框 + GPU scaleX 0.85s 充能条（0重排） */
+    #slideGlassLens {
+      position: fixed;
+      left: 0;
+      top: 0;
+      pointer-events: none;
+      z-index: 950;
+      opacity: 0;
+      transform: translate3d(-9999px, -9999px, 0);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.28);
+      backdrop-filter: blur(8px) saturate(165%);
+      -webkit-backdrop-filter: blur(8px) saturate(165%);
+      border: 1.5px solid rgba(255, 255, 255, 0.85);
+      box-shadow: 0 6px 20px rgba(79, 70, 229, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+      overflow: hidden;
+      contain: layout style paint;
+      will-change: transform, opacity;
+      transition: opacity 0.08s linear;
+    }
+    body.dark-mode #slideGlassLens {
+      background: rgba(148, 163, 184, 0.26);
+      border-color: rgba(255, 255, 255, 0.55);
+    }
+    #slideGlassLens.visible { opacity: 1; }
+    #slideGlassLens.fired {
+      background: rgba(79, 70, 229, 0.38);
+      border-color: #38bdf8;
+    }
+    #slideGlassBar {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      height: 4px;
+      width: 100%;
+      transform-origin: left center;
+      transform: scaleX(0);
+      will-change: transform;
+      background: linear-gradient(90deg, var(--primary), #38bdf8);
+      border-radius: 0 4px 4px 0;
+    }
+
+    #toastTip {
+      position: fixed; left: 50%; bottom: 82px; transform: translateX(-50%);
+      z-index: 960; background: rgba(17, 24, 39, 0.86); color: #fff;
+      padding: 6px 14px; border-radius: 20px; font-size: 12px;
+      pointer-events: none; opacity: 0; transition: opacity 0.2s;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      white-space: nowrap;
+    }
+    #toastTip.show { opacity: 1; }
+
+    /* 底部 6 栏导航（1:1 连续跟手液态毛玻璃胶囊） */
+    nav {
+      position: fixed; bottom: 0; left: 0; right: 0; height: 66px;
+      background: var(--card); border-top: 1px solid var(--border);
+      display: grid; grid-template-columns: repeat(6, 1fr); align-items: center;
+      z-index: 30; touch-action: none; user-select: none; -webkit-user-select: none;
+    }
+    #navGlassIndicator {
+      position: absolute; top: 6px; bottom: 6px; left: 0;
+      width: calc(100% / 6 - 8px);
+      margin-left: 4px;
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--primary) 18%, rgba(255, 255, 255, 0.38));
+      backdrop-filter: blur(12px) saturate(180%);
+      -webkit-backdrop-filter: blur(12px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.62);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      pointer-events: none;
+      z-index: 0;
+      will-change: transform;
+      transform: translate3d(0, 0, 0) scale(1);
+      transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    /* 拖拽跟手期间立刻关闭 transition，实现 0 延迟贴手滑动 */
+    #navGlassIndicator.dragging {
+      transition: none !important;
+      box-shadow: 0 6px 18px rgba(79, 70, 229, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.75);
+      border-color: rgba(255, 255, 255, 0.85);
+    }
+    body.dark-mode #navGlassIndicator {
+      background: color-mix(in srgb, var(--primary) 30%, rgba(30, 41, 59, 0.45));
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+    nav button {
+      position: relative; z-index: 1;
+      background: none; border: none; color: var(--sub);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-size: 10px; gap: 2px; cursor: pointer; padding: 6px 2px; font-family: inherit;
+      height: 100%;
+    }
+    nav button.active { color: var(--primary); font-weight: 700; }
+    nav button span.ico { font-size: 19px; }
+  </style>
+</head>
+<body>
+  <header id="topHeader">
+    <h1 id="headerTitle">📅 智能课表</h1>
+    <button class="hdr-btn" id="openSettingsBtn">🎨 设置</button>
+    <button class="hdr-btn" id="testAlarmBtn">⏰ 闹钟</button>
+  </header>
+
+  <!-- 1. 课表 + 双时区时钟 / 互动天气 -->
+  <section id="page-schedule" class="page active">
+    <div class="dash-card">
+      <div class="dash-head-bar">
+        <div class="city-bar" id="cityTabs"></div>
+        <button class="city-pill" id="refreshWeatherBtn" style="flex-shrink:0;">🔄 刷新</button>
+      </div>
+
+      <div class="dual-tz-bar" id="dualTzBar"></div>
+
+      <div class="dash-top">
+        <div>
+          <div class="clock-big" id="liveClock">--:--:--</div>
+          <div class="dash-sub" id="liveDate">正在同步设备与网络时区...</div>
+          <div class="dash-sub" id="liveTzLabel" style="opacity:0.8;"></div>
+        </div>
+        <div class="weather-box">
+          <div class="weather-temp" id="weatherTemp">--°C</div>
+          <div class="dash-sub" id="weatherDesc">正在定位...</div>
+          <div class="dash-sub" id="weatherDetail">湿度 --% · 降水 --%</div>
+        </div>
+      </div>
+
+      <div class="weather-section-label">
+        <span>🕒 未来24小时天气时报（滑动或停顿0.85秒看详情）</span>
+      </div>
+      <div class="scroll-strip" id="hourlyStrip"></div>
+
+      <div class="weather-section-label">
+        <span>📆 未来7天天气预报（滑动或停顿0.85秒看建议）</span>
+      </div>
+      <div class="scroll-strip" id="dailyStrip"></div>
+
+      <div class="advice-box" id="smartAdviceBox">💡 正在生成结合当地天气与课表的智能建议...</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>添加课程</span>
+        <div style="display:flex; gap:6px;">
+          <button class="btn btn-sm btn-green" id="smartImportCourseBtn">📷 图/文档识课表</button>
+          <button class="btn btn-sm btn-outline" id="openBatchCourseBtn">📋 文本导入</button>
+        </div>
+      </div>
+      <div class="form-grid">
+        <input id="cName" placeholder="课程名称 (如: 高等数学)" class="form-full" />
+        <select id="cDay">
+          <option value="1">周一</option><option value="2">周二</option>
+          <option value="3">周三</option><option value="4">周四</option>
+          <option value="5">周五</option><option value="6">周六</option>
+          <option value="0">周日</option>
+        </select>
+        <input id="cRoom" placeholder="教室/地点" />
+        <input id="cStart" type="time" value="08:00" />
+        <input id="cEnd" type="time" value="09:40" />
+        <select id="cAdvance">
+          <option value="15">提前15分钟</option><option value="30">提前30分钟</option>
+          <option value="10">提前10分钟</option><option value="5">提前5分钟</option>
+          <option value="0">准点提醒</option>
+        </select>
+        <select id="cMode">
+          <option value="sys_alarm">📱 同步系统闹钟(关App有效)</option>
+          <option value="sys_cal">📅 同步系统日历(关App有效)</option>
+          <option value="alarm">⏰ App 15秒响铃</option>
+          <option value="vibrate">📳 震动横幅</option>
+          <option value="normal">🔔 普通通知</option>
+        </select>
+        <button class="btn form-full" id="addCourseBtn">保存课程并启用提醒</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="day-tabs" id="dayTabs"></div>
+      <div id="courseList"></div>
+    </div>
+  </section>
+
+  <!-- 2. 考试与日程 -->
+  <section id="page-exams" class="page">
+    <div class="card">
+      <div class="card-title">
+        <span>添加考试 / 日程 / 闹钟</span>
+        <button class="btn btn-sm btn-green" id="smartImportExamBtn">📷 图/文档识日程</button>
+      </div>
+      <div class="form-grid">
+        <select id="eType">
+          <option value="考试">📝 考试计划</option>
+          <option value="日程">📅 重要日程</option>
+          <option value="闹钟">⏰ 专属闹钟</option>
+        </select>
+        <input id="eRoom" placeholder="地点 / 考场" />
+        <input id="eName" placeholder="标题" class="form-full" />
+        <input id="eDateTime" type="datetime-local" class="form-full" />
+        <select id="eAdvance">
+          <option value="0">准点响铃</option><option value="15">提前15分钟</option>
+          <option value="30">提前30分钟</option><option value="60">提前1小时</option>
+          <option value="1440">提前1天</option>
+        </select>
+        <select id="eMode">
+          <option value="sys_alarm">📱 同步系统闹钟(关App有效)</option>
+          <option value="sys_cal">📅 同步系统日历(关App有效)</option>
+          <option value="alarm">⏰ App 15秒响铃</option>
+          <option value="vibrate">📳 震动提醒</option>
+          <option value="normal">🔔 普通通知</option>
+        </select>
+        <input id="eNote" placeholder="备注 / 携带物品" class="form-full" />
+        <button class="btn form-full" id="addExamBtn">保存并同步设备提醒</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">考试 / 日程 / 闹钟清单</div>
+      <div id="examList"></div>
+    </div>
+  </section>
+
+  <!-- 3. 图文资料库 -->
+  <section id="page-files" class="page">
+    <div class="card">
+      <div class="card-title">导入图片 / 文档 / 文字（支持离线OCR识别）</div>
+      <div class="form-grid">
+        <button class="btn" id="nativeImportFileBtn">📁 导入图片/文档</button>
+        <button class="btn btn-outline" id="openNoteModalBtn">📝 新建文字笔记</button>
+      </div>
+      <input type="file" id="fallbackFileInput" multiple style="display:none;" />
+    </div>
+    <div class="card">
+      <div class="card-title">
+        <span>本地资料库</span>
+        <select id="fileFilter" style="width:auto; padding:4px 8px; font-size:12px;">
+          <option value="all">全部</option><option value="image">图片</option>
+          <option value="text">文字</option><option value="doc">Word/Excel/PDF</option>
+        </select>
+      </div>
+      <div id="fileList"></div>
+    </div>
+  </section>
+
+  <!-- 4. 音乐 -->
+  <section id="page-music" class="page">
+    <div class="card">
+      <div class="card-title">
+        <span>🌐 多源在线搜歌（0缓存直连播放）</span>
+        <button class="btn btn-sm btn-outline" id="refreshOnlineMusicBtn">🔄 刷新</button>
+      </div>
+      <div class="search-row">
+        <input id="onlineMusicQuery" placeholder="搜歌名/歌手 (如 李玉刚 刚好遇见你、周杰伦)..." />
+        <button class="btn btn-sm" id="searchOnlineMusicBtn" style="white-space:nowrap;">🔍 搜歌</button>
+      </div>
+      <!-- 常驻独立历史区：在线搜歌历史 + 在线播放历史（仅存文字记录，0MB音频占用） -->
+      <div id="onlineMusicHistoryBox" class="music-hist-box"></div>
+      <div id="onlineMusicResults"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>🎧 零占用后台音乐播放器 & 硬件EQ</span>
+        <button class="btn btn-sm btn-outline" id="nativeImportMusicBtn">+ 关联本地音乐</button>
+      </div>
+      <input type="file" id="fallbackMusicInput" multiple accept="audio/*" style="display:none;" />
+      <div class="player-panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:6px;">
+          <div id="nowPlaying" style="font-weight:600; font-size:14px; word-break:break-all;">未选择曲目</div>
+          <span id="nowFormatBadge" class="badge badge-fmt" style="display:none;">MP3</span>
+        </div>
+        <input type="range" id="musicSeek" min="0" max="100" value="0" step="0.1" />
+        <div class="time-row"><span id="curTime">00:00</span><span id="durTime">00:00</span></div>
+        <div class="player-controls">
+          <button class="btn btn-sm btn-outline" id="loopModeBtn">🔁 列表</button>
+          <button class="btn btn-sm btn-outline" id="prevTrackBtn">⏮</button>
+          <button class="btn btn-sm" id="playPauseBtn" style="padding:7px 18px;">▶️ 播放</button>
+          <button class="btn btn-sm btn-outline" id="nextTrackBtn">⏭</button>
+          <select id="playSpeed" style="width:auto; padding:4px 6px; font-size:12px;">
+            <option value="0.75">0.75x</option><option value="1" selected>1.0x</option>
+            <option value="1.25">1.25x</option><option value="1.5">1.5x</option>
+          </select>
+        </div>
+        <div class="eq-box">
+          <div style="font-size:12px; font-weight:600; margin-bottom:6px;">🎚️ 音效预设与均衡器 (后台实时生效)</div>
+          <div class="eq-pills" id="eqPresets">
+            <button class="eq-pill active" data-eq="flat">🎧 原声</button>
+            <button class="eq-pill" data-eq="bass">🔊 重低音</button>
+            <button class="eq-pill" data-eq="vocal">🎤 清澈人声</button>
+            <button class="eq-pill" data-eq="sleep">🌙 柔和助眠</button>
+            <button class="eq-pill" data-eq="hall">🏛️ 环绕大厅</button>
+          </div>
+          <div class="eq-slider-row"><span>低音</span><input type="range" id="eqBass" min="-12" max="12" step="1" value="0" /><span id="eqBassVal">0dB</span></div>
+          <div class="eq-slider-row"><span>中音</span><input type="range" id="eqMid" min="-12" max="12" step="1" value="0" /><span id="eqMidVal">0dB</span></div>
+          <div class="eq-slider-row"><span>高音</span><input type="range" id="eqTreble" min="-12" max="12" step="1" value="0" /><span id="eqTrebleVal">0dB</span></div>
+        </div>
+        <audio id="audioPlayer" preload="metadata"></audio>
+      </div>
+      <div id="trackList"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>🌿 助眠白噪音 & 定时关闭</span>
+        <select id="sleepTimer" style="width:auto; padding:4px 8px; font-size:12px;">
+          <option
