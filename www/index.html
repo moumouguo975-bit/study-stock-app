@@ -215,11 +215,16 @@
     .eq-slider-row { display: grid; grid-template-columns: 46px 1fr 38px; align-items: center; gap: 6px; font-size: 12px; margin-top: 4px; }
     .cover-img { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; flex-shrink: 0; background: var(--border); }
 
-    /* 词典与防选中双击跳译单词 */
+    /* 词典与零位移双击跳译单词 */
     .trans-out {
       min-height: 76px; background: var(--card-sub); border: 1px solid var(--border);
       border-radius: 10px; padding: 12px; font-size: 1.08em; line-height: 1.6;
       white-space: pre-wrap; word-break: break-word;
+      transition: box-shadow 0.25s ease, border-color 0.25s ease;
+    }
+    .trans-out.jump-pulse {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--primary-light);
     }
     .dict-sec { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
     .dict-sec-title { font-size: 13px; font-weight: 600; color: var(--primary); margin-bottom: 6px; }
@@ -227,18 +232,19 @@
       display: inline-block; margin: 3px 4px 3px 0; padding: 4px 8px; border-radius: 8px;
       background: var(--card-sub); border: 1px solid var(--border); font-size: 12px; cursor: pointer;
     }
-    .example-item { padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 13px; line-height: 1.7; }
+    .example-item { padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 13px; line-height: 1.8; }
     .example-item:last-child { border-bottom: none; }
     .tap-word {
-      display: inline-block; padding: 1px 3px; border-radius: 5px; cursor: pointer;
+      display: inline-block; padding: 1px 3px; margin: 0 0.5px; border-radius: 5px; cursor: pointer;
       user-select: none; -webkit-user-select: none; touch-action: manipulation;
-      transition: background 0.15s, color 0.15s;
+      transition: background 0.12s, color 0.12s, box-shadow 0.12s;
     }
+    /* 不改变 font-weight，确保首次点击绝不导致换行位移、第二下稳稳命中 */
     .tap-word.primed {
       background: var(--primary-light); color: var(--primary);
-      outline: 1px dashed var(--primary); font-weight: 600;
+      box-shadow: inset 0 0 0 1px var(--primary);
     }
-    .tap-word.flash { background: var(--primary); color: #fff; font-weight: 600; }
+    .tap-word.flash { background: var(--primary); color: #fff; }
 
     /* 颜色选择圆点 */
     .swatch-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
@@ -259,30 +265,32 @@
     .ring-icon { font-size: 72px; animation: shake 0.4s infinite; }
     @keyframes shake { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-16deg)} 75%{transform:rotate(16deg)} }
 
-    /* 60fps 零延迟跟手毛玻璃光球（随时跟随指尖，不掉帧） */
+    /* 60/120fps 纯GPU跟手毛玻璃光球（无transform过渡，零延迟跟手） */
     #fingerGlassOrb {
       position: fixed;
       left: 0;
       top: 0;
-      width: 58px;
-      height: 58px;
-      margin-left: -29px;
-      margin-top: -29px;
+      width: 56px;
+      height: 56px;
+      margin-left: -28px;
+      margin-top: -28px;
       border-radius: 50%;
       pointer-events: none;
       z-index: 949;
       opacity: 0;
-      background: radial-gradient(circle, rgba(255, 255, 255, 0.5) 0%, rgba(99, 102, 241, 0.16) 68%, transparent 100%);
-      backdrop-filter: blur(8px) saturate(170%);
-      -webkit-backdrop-filter: blur(8px) saturate(170%);
-      border: 1.5px solid rgba(255, 255, 255, 0.72);
-      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.16);
+      transform: translate3d(-120px, -120px, 0);
+      background: radial-gradient(circle, rgba(255, 255, 255, 0.52) 0%, rgba(99, 102, 241, 0.16) 68%, transparent 100%);
+      backdrop-filter: blur(6px) saturate(160%);
+      -webkit-backdrop-filter: blur(6px) saturate(160%);
+      border: 1.5px solid rgba(255, 255, 255, 0.74);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+      contain: layout style paint;
       will-change: transform, opacity;
-      transition: opacity 0.1s ease;
+      transition: opacity 0.08s linear;
     }
     #fingerGlassOrb.visible { opacity: 1; }
 
-    /* 吸附到按钮上的毛玻璃光晕 + 0.85s 充能条（用 GPU transform 瞬时跟手） */
+    /* 吸附按钮毛玻璃框 + GPU scaleX 0.85s 充能条（0重排） */
     #slideGlassLens {
       position: fixed;
       left: 0;
@@ -290,18 +298,20 @@
       pointer-events: none;
       z-index: 950;
       opacity: 0;
+      transform: translate3d(-9999px, -9999px, 0);
       border-radius: 12px;
-      background: rgba(255, 255, 255, 0.30);
-      backdrop-filter: blur(10px) saturate(170%);
-      -webkit-backdrop-filter: blur(10px) saturate(170%);
+      background: rgba(255, 255, 255, 0.28);
+      backdrop-filter: blur(8px) saturate(165%);
+      -webkit-backdrop-filter: blur(8px) saturate(165%);
       border: 1.5px solid rgba(255, 255, 255, 0.85);
-      box-shadow: 0 6px 22px rgba(79, 70, 229, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+      box-shadow: 0 6px 20px rgba(79, 70, 229, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.7);
       overflow: hidden;
-      will-change: transform, width, height, opacity;
-      transition: opacity 0.1s ease;
+      contain: layout style paint;
+      will-change: transform, opacity;
+      transition: opacity 0.08s linear;
     }
     body.dark-mode #slideGlassLens {
-      background: rgba(148, 163, 184, 0.28);
+      background: rgba(148, 163, 184, 0.26);
       border-color: rgba(255, 255, 255, 0.55);
     }
     #slideGlassLens.visible { opacity: 1; }
@@ -314,7 +324,10 @@
       left: 0;
       bottom: 0;
       height: 4px;
-      width: 0%;
+      width: 100%;
+      transform-origin: left center;
+      transform: scaleX(0);
+      will-change: transform;
       background: linear-gradient(90deg, var(--primary), #38bdf8);
       border-radius: 0 4px 4px 0;
     }
@@ -329,7 +342,7 @@
     }
     #toastTip.show { opacity: 1; }
 
-    /* 底部 6 栏导航（液态毛玻璃滑动胶囊） */
+    /* 底部 6 栏导航（1:1 连续跟手液态毛玻璃胶囊） */
     nav {
       position: fixed; bottom: 0; left: 0; right: 0; height: 66px;
       background: var(--card); border-top: 1px solid var(--border);
@@ -341,14 +354,22 @@
       width: calc(100% / 6 - 8px);
       margin-left: 4px;
       border-radius: 14px;
-      background: color-mix(in srgb, var(--primary) 18%, rgba(255, 255, 255, 0.35));
-      backdrop-filter: blur(14px) saturate(180%);
-      -webkit-backdrop-filter: blur(14px) saturate(180%);
-      border: 1px solid rgba(255, 255, 255, 0.55);
+      background: color-mix(in srgb, var(--primary) 18%, rgba(255, 255, 255, 0.38));
+      backdrop-filter: blur(12px) saturate(180%);
+      -webkit-backdrop-filter: blur(12px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.62);
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
       pointer-events: none;
       z-index: 0;
-      transition: transform 0.14s cubic-bezier(0.22, 1, 0.36, 1);
+      will-change: transform;
+      transform: translate3d(0, 0, 0) scale(1);
+      transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    /* 拖拽跟手期间立刻关闭 transition，实现 0 延迟贴手滑动 */
+    #navGlassIndicator.dragging {
+      transition: none !important;
+      box-shadow: 0 6px 18px rgba(79, 70, 229, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.75);
+      border-color: rgba(255, 255, 255, 0.85);
     }
     body.dark-mode #navGlassIndicator {
       background: color-mix(in srgb, var(--primary) 30%, rgba(30, 41, 59, 0.45));
