@@ -1,0 +1,385 @@
+{
+  "updatedAt": "2026-11-25 19:01 (北京时间)",
+  "indices": [
+    {
+      "symbol": "^GSPC",
+      "name": "标普500",
+      "region": "美国",
+      "price": 7201.09,
+      "change": -36.08,
+      "changePct": -0.5
+    },
+    {
+      "symbol": "^IXIC",
+      "name": "纳斯达克",
+      "region": "美国",
+      "price": 23733.54,
+      "change": -356.02,
+      "changePct": -1.48
+    },
+    {
+      "symbol": "^DJI",
+      "name": "道琼斯",
+      "region": "美国",
+      "price": 50018.7,
+      "change": 423.39,
+      "changePct": 0.85
+    },
+    {
+      "symbol": "000001.SS",
+      "name": "上证指数",
+      "region": "中国A股",
+      "price": 3476.47,
+      "change": -71.9,
+      "changePct": -2.03
+    },
+    {
+      "symbol": "^HSI",
+      "name": "恒生指数",
+      "region": "中国香港",
+      "price": 21966.01,
+      "change": -253.64,
+      "changePct": -1.14
+    },
+    {
+      "symbol": "^N225",
+      "name": "日经225",
+      "region": "日本",
+      "price": 57011.62,
+      "change": -1633.01,
+      "changePct": -2.78
+    },
+    {
+      "symbol": "^GDAXI",
+      "name": "德国DAX",
+      "region": "欧洲",
+      "price": 25057.36,
+      "change": 39.55,
+      "changePct": 0.16
+    }
+  ],
+  "stocks": [
+    {
+      "symbol": "AAPL",
+      "name": "苹果 Apple",
+      "market": "美股",
+      "price": 354.07,
+      "change": 4.99,
+      "changePct": 1.43,
+      "summary": "今日焦点：\n• 中国石油股价在盘整中徘徊于日内低点附近，CCI处于超卖区间 - Traders Union\n• 霍尔木兹海峡，三艘油轮爆炸；美股大爆发！黄仁勋复职，英伟达暴涨超31%；A股监管明确两融风控细则；事关养老钱，公开征求意见丨每经早参 - 每日经济新闻\n• Arm Holdings PLC(ARM)股票11月24日盘中下跌7.66%：关键驱动因素揭晓 - TradingKey",
+      "news": [
+        {
+          "title": "中国石油股价在盘整中徘徊于日内低点附近，CCI处于超卖区间 - Traders Union",
+          "source": "Traders Union",
+          "time": "Wed, 25 Nov 2026 02:41",
+          "link": "https://news.google.com/rss/articles/CBMimwFBVV95cUxOcmxaRVQ1U1k0Vzg4VFY3WTBwdklxblJITERfb2ZENGxqRENmZGhEem5KeUxqR2dOZFBZZEdOMU92MjkwUmxoZ3NlbHhXRFdNRGp2THljM3lmTFBzdkpJWlFjOTVNdGZGR3B6UmZFeUVZY09vM0tZeGFCbTdWRHc0c0JDdHNPcVdMbzAydHhSdTNibF91dm9GVVpFUQ?oc=5"
+        },
+        {
+          "title": "霍尔木兹海峡，三艘油轮爆炸；美股大爆发！黄仁勋复职，英伟达暴涨超31%；A股监管明确两融风控细则；事关养老钱，公开征求意见丨每经早参 - 每日经济新闻",
+          "source": "每日经济新闻",
+          "time": "Mon, 23 Nov 2026 21:55",
+          "link": "https://news.google.com/rss/articles/CBMiZkFVX3lxTE5MelZZMmQ4T3c0NHk1ZFdCWS1yNE9Hdk9TQmNnbnRYTlRkbUZqYl83am12TWI0ZFI3blpiRzBLeW05S1VlNk4zZnV3SFk1R1ZKdFFWNjQ0VmZjaU4wakYyWW5CQWlGQQ?oc=5"
+        },
+        {
+          "title": "Arm Holdings PLC(ARM)股票11月24日盘中下跌7.66%：关键驱动因素揭晓 - TradingKey",
+          "source": "TradingKey",
+          "time": "Tue, 24 Nov 2026 19:17",
+          "link": "https://news.google.com/rss/articles/CBMilAFBVV95cUxPa1h6R1BvemVtb2xwRlRXVXl2RTNZTWMyQzZyRjBES0UzSVgxYzc3SE40THZ1UHVZdVZ0amh1Umdqa3l6WDVxbU9MbDlGSW9GLVVCaGZLd3FyQlB4aDBmTzJpMmstckpRcXZIbmxYdkgteUFjY1k2VEdkcExBLThZd0lKRWpVMGJHUlJ1Yk1CNmMza1Qz?oc=5"
+        },
+        {
+          "title": "科磊(KLAC)股票11月24日盘中下跌7.97%：背后推手曝光 - TradingKey",
+          "source": "TradingKey",
+          "time": "Tue, 24 Nov 2026 19:17",
+          "link": "https://news.google.com/rss/articles/CBMilgFBVV95cUxPWEljSzV0ek8wQjdMYkRsQnotRzZqeWVyU1pITEstMmtFS2VEVE94bXJjWEZ0eVQwYnR1U1U4TE1CREVUOUJ6NnQ2dlpGekRpSzVmc0hUTC14a1NfdnVZcTRRbzJyV090SzAwMnBnUUZwSHkxY2dqUGRZMTZmc2NldW5mdHZmV3lDRjFTeUFvLTR2d2dHV2c?oc=5"
+        },
+        {
+          "title": "Apple Will Have “One of the Top Three Agents in the World” Within 24 Months, Predicts Jason Calacanis - TIKR.com",
+          "source": "TIKR.com",
+          "time": "Mon, 23 Nov 2026 11:15",
+          "link": "https://news.google.com/rss/articles/CBMixgFBVV95cUxPWVpmY1ZuOXNpbzZXU2hQMHd5T0tYM0UxLWxFOFJ1VEZWWWQ4cmtXQ3RsWG83NVA5ZGtOcThuUjlZTVhBWUFCNlhMWUdzVkxvMVRhanE3TDVKZW04YWxoTVQzS1RwZzFZY2gzNnlGZ0I2RW1FUWcyTkF3Mm9KQkxuRW5QWDN5VkQ3SjNFaTUxZ2VBNUtzcnVMVFAzYVdpeGhEdGo3Y1FVVVBVVzRWNktSN3R6TkFLcUpYRzhVX0RITUhYdm1GZmc?oc=5"
+        }
+      ]
+    },
+    {
+      "symbol": "NVDA",
+      "name": "英伟达 NVIDIA",
+      "market": "美股",
+      "price": 155.38,
+      "change": -9.67,
+      "changePct": -5.86,
+      "summary": "今日焦点：\n• Nvidia股价盘前跌逾5%，黄仁勋回归热情消退 提供者 Investing.com - 英为财情 Investing.com\n• 黄仁勋辞职11天后重掌Nvidia：白宫背书下上演大逆转，盘前股价涨超30% - BBC\n• NVDA股票与英伟达期权 | 新闻、分析、价格预测与交易 - Moomoo",
+      "news": [
+        {
+          "title": "Nvidia股价盘前跌逾5%，黄仁勋回归热情消退 提供者 Investing.com - 英为财情 Investing.com",
+          "source": "英为财情 Investing.com",
+          "time": "Wed, 25 Nov 2026 09:49",
+          "link": "https://news.google.com/rss/articles/CBMicEFVX3lxTE9KVnlTSVRrTURzTWM2eGFsNlpHVXg3RkNfcWYyYmtqajltcW5PSVdKM0xGeG00VUJkckZlbFJob0JOUkhTR0Rnc0ZnZk4zenZMcmdfTEE0ckt5RmEtczZZT2tacUdDWmRueDBRUXVjYWY?oc=5"
+        },
+        {
+          "title": "黄仁勋辞职11天后重掌Nvidia：白宫背书下上演大逆转，盘前股价涨超30% - BBC",
+          "source": "BBC",
+          "time": "Mon, 23 Nov 2026 15:01",
+          "link": "https://news.google.com/rss/articles/CBMiZ0FVX3lxTFB6Sjd2Y2ozb3c3dmFOZmM2S3pjMzN6TEQzbE5NaFhaWFhkSnA5U0oyTkZNSlBNTUlTLTRwREYwbTlaWF9fSFJLVFV4ekVWdjlQal9SNDlhLXQybkRfZW5GWjh2ZVR6Qm_SAWxBVV95cUxQOS0zRkxkclhmd3FWdjZkallkOTlaVTRHMFhkYnExcmFVRDFTU2RhUlNoaTlDUEtlOVRvdXRmM2JOVEx3bnlHeldjb1llU0FBdjZ6cE5kLUREQ05wd2M3V1dWYnRXYUk1bmFPX2o?oc=5"
+        },
+        {
+          "title": "NVDA股票与英伟达期权 | 新闻、分析、价格预测与交易 - Moomoo",
+          "source": "Moomoo",
+          "time": "Tue, 24 Nov 2026 08:00",
+          "link": "https://news.google.com/rss/articles/CBMiwgFBVV95cUxOb3lEYTlKbFEzNmZQQTV6NjZMUm1TWWNiOElFSWtreUcxbDZtR0FMdUZrYVZPYXhlZFo3OGI1TWU1MHJoY0gzcF92MXY4UTlCQm1RdjdjVWpWeUtnV3dBSzl5TTlfZ3JVQ0tFQ3ctY1l1SnpreGtCZVl5bUVzZml5blFOYUdaNmQtVHpYX1dSYUl1bFFyMGpFZFBBZTBmcnVDcDBEVEY2Q05XNGhZckRiaEJEX3h1WjZuRFZsMF82OFhiUQ?oc=5"
+        },
+        {
+          "title": "英伟达(NVDA)股票11月24日开盘下跌5.88%：背后推手曝光 - TradingKey",
+          "source": "TradingKey",
+          "time": "Tue, 24 Nov 2026 14:48",
+          "link": "https://news.google.com/rss/articles/CBMilgFBVV95cUxNOWxzSHc2SDEzcUNxVkxwcUpyZ3RKODZiV1l3UzRxMm5HUkJDMlQzalJ6dTNYLTZsaVVSdjJOVG5HUV81d1l3YVhTdS1hRFQwTlRyVmg4X0lZdHVlTXVQc0ZYa1JtSHFCZE1TOVpqMGE1azVjT3NRTEhpRXExYUdrbDdNNlh3ejdQblF2eDQ3c056bHZHbGc?oc=5"
+        },
+        {
+          "title": "Arthur Hayes：英伟达股价上涨不利于加密市场，美股暴跌才能倒逼美联储印钞 - TradingView",
+          "source": "TradingView",
+          "time": "Mon, 23 Nov 2026 16:58",
+          "link": "https://news.google.com/rss/articles/CBMiZkFVX3lxTFBpUXljTHlMdHNGMEVaVllUOU5CMzRVR2FMbUtvY0dGenliQnkyVVpHbEhBMXFONzd3M0JDNVAwRXZnTGhTQnlYYkdUcHFCaHk1TllORlFlc29STG5TS0c1YVNkX1gyQQ?oc=5"
+        }
+      ]
+    },
+    {
+      "symbol": "TSLA",
+      "name": "特斯拉 Tesla",
+      "market": "美股",
+      "price": 384.68,
+      "change": -0.78,
+      "changePct": -0.2,
+      "summary": "今日焦点：\n• 特斯拉、SpaceX合并谈判细节曝光：全股票合并谈判推进 最早或12月宣布 - 东方财富网\n• 特斯拉：美国自动驾驶出租车网络机遇 - 富途牛牛\n• 特斯拉(TSLA)股票11月23日盘中上涨13.26%：背后推手曝光 - TradingKey",
+      "news": [
+        {
+          "title": "特斯拉、SpaceX合并谈判细节曝光：全股票合并谈判推进 最早或12月宣布 - 东方财富网",
+          "source": "东方财富网",
+          "time": "Tue, 24 Nov 2026 05:23",
+          "link": "https://news.google.com/rss/articles/CBMiZkFVX3lxTE9NZGY1dWRVdmtVeWR0cFJtTzc2cDFDdElMSnJ6aFV1R25mU3JTOXZ0ckxVOGZfT2V2YWRGSUhfZGpyLW9EeFVyakhaSXZjcENMR2hzWGl5LTEzN1VkeE50Z2xrcG9OUQ?oc=5"
+        },
+        {
+          "title": "特斯拉：美国自动驾驶出租车网络机遇 - 富途牛牛",
+          "source": "富途牛牛",
+          "time": "Tue, 24 Nov 2026 18:24",
+          "link": "https://news.google.com/rss/articles/CBMiowFBVV95cUxNV3B3SUx1MWFua2NpVGdIMk9Jc29nRFVqbFZPYTlwcHlNem1USGlmazRtaTFwTW1SbEdlVDJTdDM2TTdTaVMtZ29scGF2bDdPSTMtSW9ESnJxOTM5TUk3SEk3aTJhUl9CcXNFUVVBbmRWbS0xNVNHaWdFUFFfMGl0Mjh0T085aXEwUnJCejI2YlhkQTVRbnZQQ3hZNVZPUlhsMU5r?oc=5"
+        },
+        {
+          "title": "特斯拉(TSLA)股票11月23日盘中上涨13.26%：背后推手曝光 - TradingKey",
+          "source": "TradingKey",
+          "time": "Mon, 23 Nov 2026 16:17",
+          "link": "https://news.google.com/rss/articles/CBMilgFBVV95cUxQcl9WdGxfSWR1TDg2Z1B6ZzNteUV0Skl4QXpLOEZpczlkQmlOQnBZSVBqRmpwNnFJYzlQamVmcFhYMVpJMDRWbEtrWmRSWEpSS3Y0cXRBQWptbi1vMzlMb1pSZHF5UlNHZjhDM2xwZ29DT0xWVlBvbmlYamJYMVctX2d2dk4yQ3p4OV9QVGE0Yk1ZbHM5TXc?oc=5"
+        },
+        {
+          "title": "特斯拉受到多重利好提振，投资者仍需正视多重挑战 - NAI500",
+          "source": "NAI500",
+          "time": "Tue, 24 Nov 2026 06:03",
+          "link": "https://news.google.com/rss/articles/CBMi2wJBVV95cUxOc2JXWG56eWMybk1vX1pQQV9Sb0FGRUcyQy1DYnFFc3QyY0lyT203eTBzWkFHd2NPenVtUmpfNVV2NEdjdldnLTRkZXhOc2ZZNWZXNmk4RkR1WEVqbzZNT1RDaTg3MzBLYXdWOFAzVnRzZUJFb2ZUbV9ib3k0VFNVT0dXS3paaVcwOHZCbmlvTW9UWlpNQTZQcXh3WENYdzNiYl9NNjZJWmZqbXVJYk9CanFwZWw3RTQ5T21wLWtOb2N2bGFUeVV1by1fNnZpSzdNY3RGVTg2a0hUVHlCM2VkR25qSktqLXFTM1c3U1dQa2dyX0E5ekhQOEdwVFgzenM4ZWJ6NFJTXzFRM2tnLVRUOEhIOE9Tbk1GZ0hQZmdqdloyaEJHOXc1UXVZaW5ZNjBGZ25HN21lSm1zWFdIVVZKSWkzQnVQRHlTZXpFa3dvWDNVOG0xVnFPSlVnbw?oc=5"
+        },
+        {
+          "title": "特斯拉股价今日为何大涨13%？ 提供者 Investing.com - 英为财情 Investing.com",
+          "source": "英为财情 Investing.com",
+          "time": "Mon, 23 Nov 2026 16:13",
+          "link": "https://news.google.com/rss/articles/CBMid0FVX3lxTE5pQTdpd2xScnNkTnRzUV9TWjViNmtwS1Q0NUZLM1J2bGptWEJyZkhhRXQ5dV8yYV9oellHdjBfTlR6YnZYU3VaYjN0TjJkN3VRS2tqZTRrYlVjaW16aHZYX2M1WnE1XzdoXzF6TlVuZEJQRUVWVTJV?oc=5"
+        }
+      ]
+    },
+    {
+      "symbol": "MSFT",
+      "name": "微软 Microsoft",
+      "market": "美股",
+      "price": 496.13,
+      "change": 3.63,
+      "changePct": 0.74,
+      "summary": "今日焦点：\n• 微软(MSFT)股票11月23日开盘上涨3.39%：背后推手曝光 - TradingKey\n• $微软 (MSFT.US)$ 5月开始买微软赚了一波清仓。希望继续下跌震荡一段时间让我从新建仓。很好的股票。 - Moomoo\n• 微软股价495美元附近承压，卖方瞄准关键支撑 - Traders Union",
+      "news": [
+        {
+          "title": "微软(MSFT)股票11月23日开盘上涨3.39%：背后推手曝光 - TradingKey",
+          "source": "TradingKey",
+          "time": "Mon, 23 Nov 2026 14:49",
+          "link": "https://news.google.com/rss/articles/CBMilgFBVV95cUxPOW1WQXpBZHAtd2I3aTlFT05qM0dsVHQtTFpZem5OdlROZEVDaGpuSDNRemQ2QUMtRVhtODVGS2tmQmIycWc2bWZqZ2xuQzcyZHJqV1JseV9NRHU5M2h0S3AzUzA1ekhkU2VKcTI4Q2RVbWp3QWRoLUJkVFZYM1lFU25SbWk0eG4wNmR6Q01uTVRfUm41V1E?oc=5"
+        },
+        {
+          "title": "$微软 (MSFT.US)$ 5月开始买微软赚了一波清仓。希望继续下跌震荡一段时间让我从新建仓。很好的股票。 - Moomoo",
+          "source": "Moomoo",
+          "time": "Tue, 24 Nov 2026 02:12",
+          "link": "https://news.google.com/rss/articles/CBMirANBVV95cUxQck1DcF9ibWdsak82bE5mSEt1cWtaM2xnQnB3d1ZiUXI0OGFWM0lWMEwyNHlOam95R1pFQUZpY2RBN0M0Yk14LTdwcDA5VlJXbTRNdk5MRXJtSkdON3RHMFRpaDUybkd6dUxkejRrYTlYSHZGUFdtWVYzcmxBRzNpMHdUb19fWm1QNGdfUy05T2JqQ2Nha3JmdThlaG05YlY0QU4zNlEzVnhhTGRGTk10MzI2QmNMYjBBRG9vQVpKQWJpOUZ0ODJWYWdyREFIZVFRbXIzeURiR0k3WGlJV3BLR2FLWW5zTEx5RWJWUXN5MjhSU2ZBMnVlSXpsQTNNa2lGT3dZWVgxVGozWDhRMktBSlhPdWY3cXQzcS1TRThaZktCclQ0U1JtSGtDS25TSTlOZ2Y1YlVRX2pBX1BPdkdRU3dpR3M4YWo1LTdiR3NqaFZULWRCUjVQc3FpNVdsQUQ2dTBaWGJMeHo4aHUyTU9DeDZnMkFpT0N0NkRpWlZ6LVFaVTNCNDNNbkJLTDNxYWo4R0dpc1V6T09DX0h6YUJINVk5S19JSk9CdXFiVg?oc=5"
+        },
+        {
+          "title": "微软股价495美元附近承压，卖方瞄准关键支撑 - Traders Union",
+          "source": "Traders Union",
+          "time": "Mon, 23 Nov 2026 23:24",
+          "link": "https://news.google.com/rss/articles/CBMijwFBVV95cUxPalIzd2wtcm5vaTVqUDF0cjY0Y2pkVGtXaWZVZ3E3OFBLMi1wSVVoeW5FLUhGNEM5Wktra2JhbldWUVlyRVBnaXMyVWpsQmF2OGxpVUFFcXdfQmM5YkJobWM4aElPanlrSDN3VEZwclFONXJWZUNLZ2xNd1FMSkRBVkRjQ09fOTg1bmRyZDRzbw?oc=5"
+        },
+        {
+          "title": "更新：甲骨文股价在OpenAI合同融资进展披露后上涨 - 富途牛牛",
+          "source": "富途牛牛",
+          "time": "Mon, 23 Nov 2026 19:29",
+          "link": "https://news.google.com/rss/articles/CBMiogFBVV95cUxNUE43RFlfNXRMU3ZxRFczYThxNExDbmhubC1hbm5SMWtJaWZUVU1kWDZIWjYzanZubjhhNEpfS05wMjZqZTI5OFhoNExmVU1oaHFWQV9ITG9BbnhYODVOZFdGXy1PckVLR1laeGg4dXR1M0twTzVzSkZUSzVYWmwzTzdVQ0lWTEF3MTgyT1ltRFBTNE5teGdMTVRkZlB4QW9ydUE?oc=5"
+        },
+        {
+          "title": "埃森哲(ACN)股票11月24日盘中上涨4.83%：原因全解读 - TradingKey",
+          "source": "TradingKey",
+          "time": "Tue, 24 Nov 2026 20:16",
+          "link": "https://news.google.com/rss/articles/CBMilAFBVV95cUxQWFM3eU1rNXg5elpCNFMxbGwteUtTc2c1N2ZRcWlkMzh3bGwtY09pNmE5WHNlSVZxRGVESE1pRjFGS1VOeU1nRGFVdHp1LTVSbjA5MDZfaXJQZ0tySlBQNWxYR3lhcTdPbHFCbUp0Q05FaGxPLVE1Q2hsR3poWUlmc1RwalNPeVlNNTkyREsxVG54bW1D?oc=5"
+        }
+      ]
+    },
+    {
+      "symbol": "0700.HK",
+      "name": "腾讯控股",
+      "market": "港股",
+      "price": 337.4,
+      "change": -4.2,
+      "changePct": -1.23,
+      "summary": "今日焦点：\n• 腾讯控股(00700)股票股价_股价行情_讨论_资讯_财报_数据报告 - 雪球\n• 腾讯发布 Hy4 AI，卖方压力下股价保持稳定 - Traders Union\n• 【银河传媒互联网岳铮】公司点评丨腾讯控股(0700.HK)：营销、本土游戏业务亮眼，AI应用迅速发展 - 新浪财经",
+      "news": [
+        {
+          "title": "腾讯控股(00700)股票股价_股价行情_讨论_资讯_财报_数据报告 - 雪球",
+          "source": "雪球",
+          "time": "Tue, 24 Nov 2026 06:41",
+          "link": "https://news.google.com/rss/articles/CBMiP0FVX3lxTFBHbWRUbUUzWG5tWVhFZm9rMjRHNlRZRG80OXNUSU9YMWxCNE1acUZLNUVsNWpTWUV4dXpPQTFxNA?oc=5"
+        },
+        {
+          "title": "腾讯发布 Hy4 AI，卖方压力下股价保持稳定 - Traders Union",
+          "source": "Traders Union",
+          "time": "Tue, 24 Nov 2026 03:56",
+          "link": "https://news.google.com/rss/articles/CBMijgFBVV95cUxOajJ1YnNEcE9Da1dfUlhhWkdDLVNnLVctOUVYN1NfaFRUOHNERjAyYXZpSFpldjhlRy1WMm1fRkNPLW1jQmRtY0lFNE1PQW5IOWF0UmRnX3RBVkpnZTJDZHlKSFJpSFBtd0NWcndhX2JRM1BXRVdlX1U3dE5oSVJLTy11cFI4eUpqaGFUOTJ3?oc=5"
+        },
+        {
+          "title": "【银河传媒互联网岳铮】公司点评丨腾讯控股(0700.HK)：营销、本土游戏业务亮眼，AI应用迅速发展 - 新浪财经",
+          "source": "新浪财经",
+          "time": "Tue, 24 Nov 2026 00:31",
+          "link": "https://news.google.com/rss/articles/CBMihgFBVV95cUxOUEZWTHJvM09QaTZKd3hXRmhsUlNXYURZQjU4RHNRQlhvYU94dE1KMGJ5MXE0VmkxMVpkQWI2SEMzWlVRSXBtdE50aFpUNVZjdElyWVVzVTd3YktnZS1ZWWotZG52REgwbWhkcDhPZ2xONU9KTHlnOEE0MDBBbS1SakRXbEJjdw?oc=5"
+        },
+        {
+          "title": "在动能疲弱、AI资本支出增加之际，0700能否守住HK$327.28支撑位？ - Traders Union",
+          "source": "Traders Union",
+          "time": "Tue, 24 Nov 2026 02:13",
+          "link": "https://news.google.com/rss/articles/CBMimAFBVV95cUxOTVF6RnByeG14XzlQaUNfR3hsaEgxTy1ocVZId2JuMTVTNXZ1RWlyUmVCQjBJN2ZFd0VEU2FKckhkNHBwVmUwMDRXaUZoN3lhYWJhSmFfVWFKZ3k3TlNsYXc2aUxDTnRTNVBKeExOaXBYZVBPMDJpWVdlUkt6dUdDdW1GSm45eGFhejk3a05kN09keVBMbVhxWg?oc=5"
+        }
+      ]
+    },
+    {
+      "symbol": "9988.HK",
+      "name": "阿里巴巴",
+      "market": "港股",
+      "price": 81.2,
+      "change": -1.0,
+      "changePct": -1.22,
+      "summary": "今日焦点：\n• 阿里巴巴考虑明年发行离岸债券，为AI扩张提供资金——彭博社 提供者 Investing.com - 英为财情 Investing.com\n• 《股市简讯》阿里巴巴港股升4.5%后涨幅缩窄，子公司被列入美国贸易黑名单 - TradingView\n• 【券商聚焦】国海证券维持阿里巴巴买入评级 指云业务增速有望恢复-证券之星 - 证券之星",
+      "news": [
+        {
+          "title": "阿里巴巴考虑明年发行离岸债券，为AI扩张提供资金——彭博社 提供者 Investing.com - 英为财情 Investing.com",
+          "source": "英为财情 Investing.com",
+          "time": "Wed, 25 Nov 2026 03:51",
+          "link": "https://news.google.com/rss/articles/CBMicEFVX3lxTE1wbXA0bmZOWkp5Z1IxNTd4bmQ4akpMQnpwdXRMTHlWNlFGODR0Z3NIcGRvRlZqZThDaTFTRFpsaS1TblMtZm5yWXFYbi1mLXExV1ZRYlpzdXRSWnFwV0E1V2V4cWM5cmo3U1JCUzFhM20?oc=5"
+        },
+        {
+          "title": "《股市简讯》阿里巴巴港股升4.5%后涨幅缩窄，子公司被列入美国贸易黑名单 - TradingView",
+          "source": "TradingView",
+          "time": "Tue, 24 Nov 2026 02:50",
+          "link": "https://news.google.com/rss/articles/CBMid0FVX3lxTE5RUUpkM2VTS0VGY214QkY1clkySENpM0JQajMxV2dXQ05vZXg3eFlnOUdJUEhVeUpDWXk1MGJ2RklJeGZ2aXQtaFVraE9HdzUyVFpBR05sN3U5dzBsWTZ4eVhWRGtTNk15dmYyRnlYQUw3RUZhOXg4?oc=5"
+        },
+        {
+          "title": "【券商聚焦】国海证券维持阿里巴巴买入评级 指云业务增速有望恢复-证券之星 - 证券之星",
+          "source": "证券之星",
+          "time": "Wed, 25 Nov 2026 03:06",
+          "link": "https://news.google.com/rss/articles/CBMiXkFVX3lxTE5QTlFZc2RJTHpNSXJ3R3dVVGRFdFVRMkoyMmVYVEdXbmpPdkVvZUd1RDd6SUZ6dE9waVBuRzh0OElxSW1JSGpDTGc1bTg2ZEUyVi0zbFlFQlI1Z0tUWWc?oc=5"
+        },
+        {
+          "title": "【券商聚焦】浙商证券维持阿里巴巴买入评级 下调云业务增速预期-证券之星 - 证券之星",
+          "source": "证券之星",
+          "time": "Tue, 24 Nov 2026 05:19",
+          "link": "https://news.google.com/rss/articles/CBMiXkFVX3lxTE41QlZ6NVVUVGR5djhRVks3OWV6WTVmZUdjSHJhTFh1S0JNUWdISkdfdUExYmpzTGhaWDNPWHJLQ2xTcEw4QkNGd1g5amN4bm5EN2gtTWhaZEFLOWFOYmc?oc=5"
+        },
+        {
+          "title": "港股通（深）净买入26.99亿港元 - 证券之星",
+          "source": "证券之星",
+          "time": "Tue, 24 Nov 2026 13:58",
+          "link": "https://news.google.com/rss/articles/CBMiYkFVX3lxTE1pMWZ1bDJWUy1fdTRTXzNWemdGSm40WnBJbm05Rm1aTlNWZm5hcFh5Mmt1c0FfQkk2U3VhR2tXajdRLTZJYnhHd055U1VqcHAyQUVhVWdyWi1lRGJCRGpqWnhn?oc=5"
+        }
+      ]
+    },
+    {
+      "symbol": "600519.SS",
+      "name": "贵州茅台",
+      "market": "A股",
+      "price": 1474.84,
+      "change": 14.84,
+      "changePct": 1.02,
+      "summary": "今日焦点：\n• 永辉超市贵州茅台合资公司解散，透露哪两大信息？_公司新闻 - 证券之星\n• 贵州茅台销售渠道改革加快 解散与永辉超市合资公司 - 经济参考报\n• 永辉与茅台合资公司拟解散：茅台销售计划已收回，永辉预计分得约1.16亿元 - ThePaper.cn",
+      "news": [
+        {
+          "title": "永辉超市贵州茅台合资公司解散，透露哪两大信息？_公司新闻 - 证券之星",
+          "source": "证券之星",
+          "time": "Wed, 25 Nov 2026 09:05",
+          "link": "https://news.google.com/rss/articles/CBMiYEFVX3lxTFBZbGVjc014MkFmNFROOWhyRHZCeGdUTkxOTDZ5NHZiNnBzQ3Q5TXlZdlc4X1ppMEpTaXlxRDk5TndZRFl1YkNCYmhvaXYwRzdhVUYyeDBxUFRmWmNsWXFNbQ?oc=5"
+        },
+        {
+          "title": "贵州茅台销售渠道改革加快 解散与永辉超市合资公司 - 经济参考报",
+          "source": "经济参考报",
+          "time": "Tue, 24 Nov 2026 13:34",
+          "link": "https://news.google.com/rss/articles/CBMigAFBVV95cUxNZE0xSnloUkpUalpEWWFJTGZvWkV3SF9hVkRUVU5Xbl9TaFhDU1ljejdoVHVMeEFFMzN6VF95VHJJYmE1ajY0X0hCcWh0MHIzei0zSGhVNGg2ck1rYUgzVmV4TGdWQTJhUjJpSnk1WEg2dXdXV1l3NzZuNGc4WHNOeA?oc=5"
+        },
+        {
+          "title": "永辉与茅台合资公司拟解散：茅台销售计划已收回，永辉预计分得约1.16亿元 - ThePaper.cn",
+          "source": "ThePaper.cn",
+          "time": "Tue, 24 Nov 2026 08:56",
+          "link": "https://news.google.com/rss/articles/CBMiYEFVX3lxTE5LWi1zX0phYkhxeHBMYUNfTW8yNXNSUC1yOEdpd3F0LVdocGx0dU9vU080YWw2UVNUVkd0cVlvWEFhRG9teTNUdUZkV2JhMTlIOWpRTWVBRS0wT0h1cFZkMA?oc=5"
+        },
+        {
+          "title": "茅台收回茅台酒配额，与永辉超市合资公司解散清算 - 中华网财经",
+          "source": "中华网财经",
+          "time": "Tue, 24 Nov 2026 09:47",
+          "link": "https://news.google.com/rss/articles/CBMib0FVX3lxTE84WUNPZUwzWmVEOUtMU2F5QllkcVZtVFN3bTIzUnNBY3h4TXc5RXBoWS10ZHdFM0RoNXVVQXNlM215cHB4VGpfaDJFSGtzWmNHbGY5TkRlZldXZF9Qb3A0YlVuUWpZSHIxRlJVWHEwWQ?oc=5"
+        },
+        {
+          "title": "永辉与茅台合资公司，宣布解散清算！年营收曾超8亿元 - 证券之星",
+          "source": "证券之星",
+          "time": "Tue, 24 Nov 2026 01:41",
+          "link": "https://news.google.com/rss/articles/CBMiX0FVX3lxTFBiZEN2VTJtY0RBNzJoczMydnUzdG1Ba0ZUUHZQZ1ZqWS1EYmozUTdaZXJfY1l2UXJ4Uk1wOWhRdUdkWVlTTVRfRWlHQXNONDJBQ2tkbUluYTdwN1A3eDdn?oc=5"
+        }
+      ]
+    },
+    {
+      "symbol": "TSM",
+      "name": "台积电 TSMC",
+      "market": "美股",
+      "price": 349.2,
+      "change": -14.4,
+      "changePct": -3.96,
+      "summary": "今日焦点：\n• 台积电(TSM.US)得州226亿美元建厂申请曝光：税收减免成拍板条件，亚利桑那仍是备选提供者智通财经 - 英为财情 Investing.com\n• 台积电(TSM)股票11月24日开盘下跌3.19%：释放什么信号？ - TradingKey\n• $台积电 (TSM.US)$ 伊朗和俄罗斯正计划对乌克兰发动联合攻击。我们可能正处于全面战争的边缘。 - Moomoo",
+      "news": [
+        {
+          "title": "台积电(TSM.US)得州226亿美元建厂申请曝光：税收减免成拍板条件，亚利桑那仍是备选提供者智通财经 - 英为财情 Investing.com",
+          "source": "英为财情 Investing.com",
+          "time": "Tue, 24 Nov 2026 10:52",
+          "link": "https://news.google.com/rss/articles/CBMicEFVX3lxTE1JejlJVE5VNFZ1ZWpfcXZXblVNM2swemFETHk0V05aTmJUQXctb1NhM1U3eW95NHJaNW5mUHFvS3pydFpickNqNWhsSnZjUXhvSmNSVUdIZFVvRWNuSzEyakhrVTZpWDd1dUwwN3VjLVQ?oc=5"
+        },
+        {
+          "title": "台积电(TSM)股票11月24日开盘下跌3.19%：释放什么信号？ - TradingKey",
+          "source": "TradingKey",
+          "time": "Tue, 24 Nov 2026 14:50",
+          "link": "https://news.google.com/rss/articles/CBMilAFBVV95cUxPMW9JZGN0ckJkZlpDQ2EwNGpzdGxsYk01Zkg0cTNlY2FiSGxtcThXdEZTcEY1M3FGeVU1M2dxelRURUhqbGNObEtMaVFzMzNKaVJkYnZWRlZGaE0xeUJJTktjSDFsMlo5RmVFWlh4UURFaExqNHZZWUpldTNfT2c2anZlai1iRndOYWlOQ3pmZVQ0TzRp?oc=5"
+        },
+        {
+          "title": "$台积电 (TSM.US)$ 伊朗和俄罗斯正计划对乌克兰发动联合攻击。我们可能正处于全面战争的边缘。 - Moomoo",
+          "source": "Moomoo",
+          "time": "Mon, 23 Nov 2026 15:04",
+          "link": "https://news.google.com/rss/articles/CBMivwFBVV95cUxORm9Pd0ppemI4TUxmWHo0ZVBpSVNJQTRnaTNDT3FndjB0SGV3N0dRUWswQTBoY2JmYThVM1ZodDJ5MGV4Z19GM25Gb0x6OGk0ZFlGdVNiM1hORXZMM1BBc2IxMTBQWWlhNUEwUno5X3EyUEMyTkc5ZVlfU3ZmQkFtcEZxRlZtaGtYUWgxdmhLRi13VXpXcy05cHdjLVdXU0pNem8wWmJhVERHdEtkRUdEZ1dWYmdhck9tQ0stc3pxSQ?oc=5"
+        },
+        {
+          "title": "台积电(TSM)股票11月23日盘中上涨15.94%：投资者必看的核心信息 - TradingKey",
+          "source": "TradingKey",
+          "time": "Mon, 23 Nov 2026 15:19",
+          "link": "https://news.google.com/rss/articles/CBMilAFBVV95cUxOMW5hbkxIQXJRYnZwVkxmemkxVlpqOVdWaU93ZlE1enpCUDlfSXozQndjbTZYX1VUWlVGS3ZnX0pZbXdIQTVUcnk5WGY4RVFLVEt3clJ5WEt1WHNmWGxqd09HOUVBeW90djRjU3AxWnl3Sjg4bnpYWDZ0VUxkYnh4ZzJ3QlNfTjFGakViZWR0WkVpZWhR?oc=5"
+        },
+        {
+          "title": "更新：台积电子公司寻求为拟议的$226亿芯片项目获得德州税收优惠 - 富途牛牛",
+          "source": "富途牛牛",
+          "time": "Wed, 25 Nov 2026 00:49",
+          "link": "https://news.google.com/rss/articles/CBMioAFBVV95cUxNWXRBNjNRU2hMWnFtMm0zZ2pHU2ZaakhLelpUSnlNcFV6YkZWaEQzNm9KUnZfYlVpOTdyaU1tUGYzRVF4RjIyQXJUb3lMV0o5NU1vNnhLOEIzVUY4NzNKejRaNGRneVJndWRoSmRTU1c2NWpYUmlSbllRQUEtc2lWVmtRamlsNEltTVBSR2RrQ0p6OU5wLVFoTkxMaEN2Qnhp?oc=5"
+        }
+      ]
+    }
+  ]
+}
