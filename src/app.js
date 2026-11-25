@@ -1595,3 +1595,1810 @@ document.getElementById('addExamBtn').addEventListener('click', async () => {
     showToast('✅ 日程与提醒已保存');
   }
 });
+// ==================== 6. 图文资料库 ====================
+let localFiles = JSON.parse(localStorage.getItem('files_meta_v3') || '[]');
+
+function saveFilesMeta() {
+  localStorage.setItem('files_meta_v3', JSON.stringify(localFiles));
+  renderFiles();
+}
+
+function renderFiles() {
+  const filter = document.getElementById('fileFilter').value;
+  const items = localFiles.filter(f => filter === 'all' || f.category === filter);
+  const list = document.getElementById('fileList');
+
+  if (!items.length) {
+    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:16px;">暂无资料 📂</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  items.forEach(f => {
+    const srcUrl = f.localPath ? Capacitor.convertFileSrc(f.localPath) : (f.dataUrl || '');
+    const div = document.createElement('div');
+    div.className = 'item-row';
+
+    const leftHtml = f.category === 'image' && srcUrl
+      ? `<img src="${srcUrl}" class="thumb" />`
+      : `<div style="font-size:26px; width:46px; text-align:center;">${f.category === 'text' ? '📝' : '📄'}</div>`;
+
+    div.innerHTML = `
+      <div style="display:flex; gap:10px; align-items:center; flex:1; cursor:pointer;" class="open-trigger">
+        ${leftHtml}
+        <div>
+          <div style="font-weight:500; word-break:break-all;">${f.name}</div>
+          <div class="sub-text">
+            <span class="badge badge-fmt">${f.format || 'FILE'}</span>
+            ${(f.size / 1024).toFixed(1)} KB
+          </div>
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:4px;">
+        <button class="btn btn-sm btn-green ocr-btn">🧠 识课表</button>
+        <button class="btn btn-sm btn-danger del-btn">删除</button>
+      </div>
+    `;
+
+    div.querySelector('.open-trigger').onclick = () => {
+      if (f.category === 'image') {
+        openModal(
+          f.name,
+          `<img src="${srcUrl}" style="width:100%; border-radius:8px; margin-bottom:10px;" />
+           <button class="btn btn-green" style="width:100%;" id="mOcr">🧠 OCR 识别图中课表/日程</button>`
+        );
+        document.getElementById('mOcr').onclick = () => runSmartRecognizeFromLocalFile(f);
+      } else if (f.textContent !== undefined) {
+        openModal(
+          f.name,
+          `<pre style="white-space:pre-wrap; font-size:13px;">${f.textContent.replace(/</g, '&lt;')}</pre>`
+        );
+      } else {
+        openModal(
+          f.name,
+          `<p class="sub-text">格式：${f.format} ｜ ${(f.size / 1024).toFixed(1)} KB</p>
+           <button class="btn btn-green" style="width:100%;" id="mDocOcr">🧠 提取文字并解析</button>`
+        );
+        document.getElementById('mDocOcr').onclick = () => runSmartRecognizeFromLocalFile(f);
+      }
+    };
+
+    div.querySelector('.ocr-btn').onclick = () => runSmartRecognizeFromLocalFile(f);
+
+    div.querySelector('.del-btn').onclick = async () => {
+      if (Capacitor.isNativePlatform() && f.localPath) {
+        try {
+          await NativeTools.deleteLocalFile({ localPath: f.localPath });
+        } catch {}
+      }
+      localFiles = localFiles.filter(x => x.id !== f.id);
+      saveFilesMeta();
+    };
+
+    list.appendChild(div);
+  });
+}
+
+document.getElementById('nativeImportFileBtn').addEventListener('click', async () => {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const res = await NativeTools.pickFiles({ accept: '*/*', multiple: true });
+      for (const f of (res.files || [])) {
+        let category = 'doc';
+        if ((f.mime || '').startsWith('image/') || /^(JPG|JPEG|PNG|WEBP|GIF|BMP)$/i.test(f.format)) {
+          category = 'image';
+        } else if ((f.mime || '').startsWith('text/') || /^(TXT|MD|CSV)$/i.test(f.format)) {
+          category = 'text';
+        }
+        localFiles.unshift({
+          id: Date.now() + Math.random(),
+          ...f,
+          category,
+          createdAt: Date.now()
+        });
+      }
+      saveFilesMeta();
+    } catch (e) {
+      if (!String(e.message).includes('取消')) {
+        alert('导入失败：' + e.message);
+      }
+    }
+  } else {
+    document.getElementById('fallbackFileInput').click();
+  }
+});
+
+document.getElementById('fallbackFileInput').addEventListener('change', async (e) => {
+  for (const file of e.target.files) {
+    const ext = (file.name.split('.').pop() || 'FILE').toUpperCase();
+    const isImg = file.type.startsWith('image/');
+    const isTxt = file.type.startsWith('text/') || /^(TXT|MD|CSV)$/.test(ext);
+    localFiles.unshift({
+      id: Date.now() + Math.random(),
+      name: file.name,
+      format: ext,
+      size: file.size,
+      category: isImg ? 'image' : (isTxt ? 'text' : 'doc'),
+      textContent: isTxt ? await file.text() : undefined,
+      dataUrl: isImg ? URL.createObjectURL(file) : undefined,
+      createdAt: Date.now()
+    });
+  }
+  e.target.value = '';
+  saveFilesMeta();
+});
+
+document.getElementById('openNoteModalBtn').addEventListener('click', () => {
+  const box = document.createElement('div');
+  box.innerHTML = `
+    <input id="noteTitle" placeholder="笔记标题" style="margin-bottom:8px;" />
+    <textarea id="noteBody" style="min-height:150px;" placeholder="输入文字..."></textarea>
+    <button class="btn" style="width:100%; margin-top:10px;" id="saveNoteBtn">保存</button>
+  `;
+  box.querySelector('#saveNoteBtn').onclick = () => {
+    const title = box.querySelector('#noteTitle').value.trim() || '未命名笔记';
+    const body = box.querySelector('#noteBody').value;
+    localFiles.unshift({
+      id: Date.now(),
+      name: title + '.txt',
+      format: 'TXT',
+      size: new Blob([body]).size,
+      category: 'text',
+      textContent: body,
+      createdAt: Date.now()
+    });
+    modal.classList.remove('open');
+    saveFilesMeta();
+  };
+  openModal('新建文字笔记', box);
+});
+
+document.getElementById('fileFilter').addEventListener('change', renderFiles);
+
+// ==================== 7. 零占用直读音乐 + 多源在线搜歌 + 硬件EQ + 白噪音 ====================
+let ambCtx = null;
+let ambNodes = [];
+let ambGain = null;
+let sleepTimeout = null;
+
+function stopAmbient() {
+  ambNodes.forEach(n => {
+    try {
+      n.stop?.();
+      n.disconnect?.();
+    } catch {}
+  });
+  ambNodes = [];
+  document.querySelectorAll('.ambient-btn').forEach(b => b.classList.remove('playing'));
+  if (Capacitor.isNativePlatform()) {
+    try {
+      NativeTools.setKeepAlive({ active: false });
+    } catch {}
+  }
+}
+
+function applySleepTimer() {
+  if (sleepTimeout) {
+    clearTimeout(sleepTimeout);
+    sleepTimeout = null;
+  }
+  const mins = Number(document.getElementById('sleepTimer').value);
+  if (mins > 0) {
+    document.getElementById('timerStatus').textContent = `⏱️ 将在 ${mins} 分钟后自动停止播放`;
+    sleepTimeout = setTimeout(async () => {
+      stopAmbient();
+      if (Capacitor.isNativePlatform()) {
+        try { await NativeTools.audioStop(); } catch {}
+      } else {
+        audioPlayer.pause();
+      }
+      playPauseBtn.textContent = '▶️ 播放';
+    }, mins * 60000);
+  } else {
+    document.getElementById('timerStatus').textContent = '';
+  }
+}
+
+document.getElementById('sleepTimer').addEventListener('change', applySleepTimer);
+
+function playAmbient(type, btnEl) {
+  stopAmbient();
+  ambCtx = ambCtx || new (window.AudioContext || window.webkitAudioContext)();
+  if (ambCtx.state === 'suspended') {
+    ambCtx.resume();
+  }
+  ambGain = ambCtx.createGain();
+  ambGain.gain.value = Number(document.getElementById('ambientVol').value);
+  ambGain.connect(ambCtx.destination);
+
+  if (type === 'alpha') {
+    [261.63, 329.63, 392.0, 493.88].forEach(freq => {
+      const osc = ambCtx.createOscillator();
+      const g = ambCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      g.gain.value = 0.09;
+      osc.connect(g);
+      g.connect(ambGain);
+      osc.start();
+      ambNodes.push(osc, g);
+    });
+  } else {
+    const bs = ambCtx.sampleRate * 3;
+    const buf = ambCtx.createBuffer(1, bs, ambCtx.sampleRate);
+    const d = buf.getChannelData(0);
+    let lo = 0;
+    for (let i = 0; i < bs; i++) {
+      const w = Math.random() * 2 - 1;
+      if (type === 'fire' || type === 'ocean') {
+        d[i] = (lo + 0.02 * w) / 1.02;
+        lo = d[i];
+        d[i] *= 3.5;
+      } else {
+        d[i] = w * 0.45;
+      }
+    }
+    const noise = ambCtx.createBufferSource();
+    noise.buffer = buf;
+    noise.loop = true;
+
+    const filter = ambCtx.createBiquadFilter();
+    filter.type = type === 'rain' ? 'bandpass' : 'lowpass';
+    filter.frequency.value = type === 'rain' ? 1100 : (type === 'ocean' ? 420 : 260);
+    noise.connect(filter);
+
+    if (type === 'ocean') {
+      const lfo = ambCtx.createOscillator();
+      const lg = ambCtx.createGain();
+      const wg = ambCtx.createGain();
+      lfo.frequency.value = 0.12;
+      lg.gain.value = 0.35;
+      wg.gain.value = 0.65;
+      lfo.connect(lg);
+      lg.connect(wg.gain);
+      filter.connect(wg);
+      wg.connect(ambGain);
+      lfo.start();
+      ambNodes.push(lfo, lg, wg);
+    } else {
+      filter.connect(ambGain);
+    }
+    noise.start();
+    ambNodes.push(noise, filter);
+  }
+
+  btnEl.classList.add('playing');
+  if (Capacitor.isNativePlatform()) {
+    try {
+      NativeTools.setKeepAlive({ active: true, title: btnEl.textContent });
+    } catch {}
+  }
+  applySleepTimer();
+}
+
+document.querySelectorAll('.ambient-btn').forEach(btn => {
+  btn.addEventListener('click', () => playAmbient(btn.dataset.sound, btn));
+});
+
+document.getElementById('stopAmbientBtn').addEventListener('click', stopAmbient);
+
+document.getElementById('ambientVol').addEventListener('input', (e) => {
+  if (ambGain) {
+    ambGain.gain.value = Number(e.target.value);
+  }
+});
+
+// 本地音乐播放器状态
+const audioPlayer = document.getElementById('audioPlayer');
+const musicSeek = document.getElementById('musicSeek');
+const curTimeEl = document.getElementById('curTime');
+const durTimeEl = document.getElementById('durTime');
+const playPauseBtn = document.getElementById('playPauseBtn');
+const loopModeBtn = document.getElementById('loopModeBtn');
+
+let tracks = JSON.parse(localStorage.getItem('tracks_v4') || '[]');
+let onlineMusicHist = JSON.parse(localStorage.getItem('online_music_hist_v1') || '[]');
+let currentTrackIdx = -1;
+let isPlayingOnlineStream = false;
+let loopMode = 'list';
+let activeEqPreset = 'flat';
+let nativeDurationMs = 0;
+let isUserSeeking = false;
+
+const EQ_PRESETS = {
+  flat: { b: 0, m: 0, t: 0 },
+  bass: { b: 9, m: 1, t: -1 },
+  vocal: { b: -2, m: 6, t: 4 },
+  sleep: { b: 2, m: -2, t: -7 },
+  hall: { b: 5, m: 2, t: 6 }
+};
+
+function fmtSec(sec) {
+  if (!isFinite(sec) || sec < 0) return '00:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function updateTrackUiHeader(title, format) {
+  document.getElementById('nowPlaying').textContent = '🎵 ' + title;
+  const badge = document.getElementById('nowFormatBadge');
+  badge.textContent = format || 'AUDIO';
+  badge.style.display = 'inline-block';
+}
+
+function syncEqToEngine() {
+  const b = Number(document.getElementById('eqBass').value);
+  const m = Number(document.getElementById('eqMid').value);
+  const t = Number(document.getElementById('eqTreble').value);
+
+  document.getElementById('eqBassVal').textContent = `${b > 0 ? '+' : ''}${b}dB`;
+  document.getElementById('eqMidVal').textContent = `${m > 0 ? '+' : ''}${m}dB`;
+  document.getElementById('eqTrebleVal').textContent = `${t > 0 ? '+' : ''}${t}dB`;
+
+  if (Capacitor.isNativePlatform()) {
+    NativeTools.audioSetEq({ bass: b, mid: m, treble: t, preset: activeEqPreset }).catch(() => {});
+  }
+}
+
+document.querySelectorAll('#eqPresets .eq-pill').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#eqPresets .eq-pill').forEach(x => x.classList.remove('active'));
+    btn.classList.add('active');
+    activeEqPreset = btn.dataset.eq;
+    const p = EQ_PRESETS[activeEqPreset] || EQ_PRESETS.flat;
+    document.getElementById('eqBass').value = p.b;
+    document.getElementById('eqMid').value = p.m;
+    document.getElementById('eqTreble').value = p.t;
+    syncEqToEngine();
+  });
+});
+
+['eqBass', 'eqMid', 'eqTreble'].forEach(id => {
+  document.getElementById(id).addEventListener('input', syncEqToEngine);
+});
+
+document.getElementById('playSpeed').addEventListener('change', (e) => {
+  const sp = Number(e.target.value);
+  if (Capacitor.isNativePlatform()) {
+    NativeTools.audioSetSpeed({ speed: sp }).catch(() => {});
+  } else {
+    audioPlayer.playbackRate = sp;
+  }
+});
+
+loopModeBtn.addEventListener('click', () => {
+  if (loopMode === 'list') {
+    loopMode = 'single';
+    loopModeBtn.textContent = '🔂 单曲';
+  } else if (loopMode === 'single') {
+    loopMode = 'shuffle';
+    loopModeBtn.textContent = '🔀 随机';
+  } else {
+    loopMode = 'list';
+    loopModeBtn.textContent = '🔁 列表';
+  }
+  if (Capacitor.isNativePlatform()) {
+    NativeTools.audioSetLoopMode({ loopMode }).catch(() => {});
+  }
+});
+
+function saveTracks() {
+  localStorage.setItem('tracks_v4', JSON.stringify(tracks));
+  renderTracks();
+}
+
+function getTrackSource(t) {
+  return t.uri || t.localPath || t.onlineUrl || t.webUrl || '';
+}
+
+async function playSingleOnlineUrl(url, title, format) {
+  isPlayingOnlineStream = true;
+  currentTrackIdx = -1;
+  renderTracks();
+  updateTrackUiHeader(title, format);
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await NativeTools.audioPlayList({
+        paths: [url],
+        titles: [title],
+        formats: [format || 'STREAM'],
+        index: 0,
+        loopMode: 'single',
+        speed: Number(document.getElementById('playSpeed').value),
+        bass: Number(document.getElementById('eqBass').value),
+        mid: Number(document.getElementById('eqMid').value),
+        treble: Number(document.getElementById('eqTreble').value)
+      });
+      playPauseBtn.textContent = '⏸ 暂停';
+      applySleepTimer();
+    } catch (e) {
+      alert('在线播放失败（可能受版权限制）：' + e.message);
+    }
+  } else {
+    audioPlayer.src = url;
+    audioPlayer.play().catch(() => {});
+  }
+}
+
+async function playTrackAt(idx) {
+  if (!tracks.length) return;
+  isPlayingOnlineStream = false;
+  currentTrackIdx = (idx + tracks.length) % tracks.length;
+  const t = tracks[currentTrackIdx];
+  updateTrackUiHeader(t.name, t.format);
+  renderTracks();
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await NativeTools.audioPlayList({
+        paths: tracks.map(getTrackSource),
+        titles: tracks.map(x => x.name || '音乐'),
+        formats: tracks.map(x => x.format || 'AUDIO'),
+        index: currentTrackIdx,
+        loopMode,
+        speed: Number(document.getElementById('playSpeed').value),
+        bass: Number(document.getElementById('eqBass').value),
+        mid: Number(document.getElementById('eqMid').value),
+        treble: Number(document.getElementById('eqTreble').value)
+      });
+      playPauseBtn.textContent = '⏸ 暂停';
+      applySleepTimer();
+    } catch (err) {
+      playPauseBtn.textContent = '▶️ 播放';
+      alert('播放失败：' + err.message);
+    }
+  } else {
+    audioPlayer.src = getTrackSource(t);
+    audioPlayer.play().catch(() => {});
+  }
+}
+
+// 后台切歌实时同步歌名、格式徽章、列表高亮与进度条
+setInterval(async () => {
+  if (!Capacitor.isNativePlatform() || document.visibilityState !== 'visible') return;
+  try {
+    const st = await NativeTools.audioGetStatus();
+    if (!st) return;
+    nativeDurationMs = st.durationMs || 0;
+    playPauseBtn.textContent = st.playing ? '⏸ 暂停' : '▶️ 播放';
+
+    if (!isPlayingOnlineStream && st.index >= 0 && st.index < tracks.length && st.index !== currentTrackIdx) {
+      currentTrackIdx = st.index;
+      updateTrackUiHeader(tracks[currentTrackIdx].name, tracks[currentTrackIdx].format);
+      renderTracks();
+    } else if (st.title && document.getElementById('nowPlaying').textContent !== '🎵 ' + st.title && st.durationMs > 0) {
+      updateTrackUiHeader(st.title, st.format || 'AUDIO');
+    }
+
+    if (!isUserSeeking && nativeDurationMs > 0) {
+      curTimeEl.textContent = fmtSec((st.currentMs || 0) / 1000);
+      durTimeEl.textContent = fmtSec(nativeDurationMs / 1000);
+      musicSeek.value = ((st.currentMs || 0) / nativeDurationMs) * 100;
+    }
+  } catch {}
+}, 500);
+
+musicSeek.addEventListener('pointerdown', () => {
+  isUserSeeking = true;
+});
+
+musicSeek.addEventListener('touchstart', () => {
+  isUserSeeking = true;
+}, { passive: true });
+
+musicSeek.addEventListener('change', async () => {
+  const pct = Number(musicSeek.value) / 100;
+  if (Capacitor.isNativePlatform() && nativeDurationMs > 0) {
+    await NativeTools.audioSeek({ positionMs: Math.floor(pct * nativeDurationMs) }).catch(() => {});
+  } else if (audioPlayer.duration) {
+    audioPlayer.currentTime = pct * audioPlayer.duration;
+  }
+  isUserSeeking = false;
+});
+
+playPauseBtn.addEventListener('click', async () => {
+  if (Capacitor.isNativePlatform()) {
+    const st = await NativeTools.audioGetStatus().catch(() => ({ playing: false }));
+    if (st.playing) {
+      await NativeTools.audioPause();
+      playPauseBtn.textContent = '▶️ 播放';
+    } else if (st.durationMs > 0) {
+      await NativeTools.audioResume();
+      playPauseBtn.textContent = '⏸ 暂停';
+    } else if (tracks.length) {
+      playTrackAt(0);
+    }
+  } else {
+    if (audioPlayer.paused) audioPlayer.play();
+    else audioPlayer.pause();
+  }
+});
+
+document.getElementById('prevTrackBtn').addEventListener('click', () => playTrackAt(currentTrackIdx - 1));
+document.getElementById('nextTrackBtn').addEventListener('click', () => playTrackAt(currentTrackIdx + 1));
+
+function renderOnlineMusicHistory(container) {
+  if (!onlineMusicHist.length) return;
+  const hDiv = document.createElement('div');
+  hDiv.style.marginBottom = '8px';
+  hDiv.innerHTML = `
+    <div class="sub-text" style="margin-bottom:4px; display:flex; justify-content:space-between;">
+      <span>🕒 搜索历史（点击或停顿0.85秒重搜）</span>
+      <span id="clrMusicHist" style="color:#dc2626; cursor:pointer;">清空</span>
+    </div>
+  `;
+  const pills = document.createElement('div');
+  pills.className = 'day-tabs';
+  onlineMusicHist.forEach(kw => {
+    const p = document.createElement('button');
+    p.className = 'day-pill';
+    p.textContent = kw;
+    p.onclick = () => {
+      document.getElementById('onlineMusicQuery').value = kw;
+      searchOnlineMusic(kw);
+    };
+    pills.appendChild(p);
+  });
+  hDiv.appendChild(pills);
+  hDiv.querySelector('#clrMusicHist').onclick = () => {
+    onlineMusicHist = [];
+    localStorage.setItem('online_music_hist_v1', '[]');
+    container.innerHTML = '';
+  };
+  container.appendChild(hDiv);
+}
+
+async function searchOnlineMusic(query) {
+  const q = query.trim();
+  const resBox = document.getElementById('onlineMusicResults');
+  resBox.innerHTML = '';
+
+  if (!q) {
+    renderOnlineMusicHistory(resBox);
+    return;
+  }
+
+  onlineMusicHist = [q, ...onlineMusicHist.filter(x => x !== q)].slice(0, 10);
+  localStorage.setItem('online_music_hist_v1', JSON.stringify(onlineMusicHist));
+  renderOnlineMusicHistory(resBox);
+
+  const loading = document.createElement('div');
+  loading.className = 'sub-text';
+  loading.style.padding = '8px';
+  loading.textContent = '🔍 正在多源曲库搜歌（网易云 / Apple多区 / Audius）...';
+  resBox.appendChild(loading);
+
+  const songs = [];
+  const seen = new Set();
+  const pushSong = (s) => {
+    const k = `${s.title}-${s.artist}-${s.src}`.toLowerCase();
+    if (!seen.has(k) && s.url) {
+      seen.add(k);
+      songs.push(s);
+    }
+  };
+
+  try {
+    const ne = await httpGetJson(
+      `https://music.163.com/api/search/get/web?s=${encodeURIComponent(q)}&type=1&offset=0&limit=10`,
+      { Referer: 'https://music.163.com/' }
+    );
+    (ne?.result?.songs || []).forEach(s => {
+      pushSong({
+        title: s.name,
+        artist: (s.artists || []).map(a => a.name).join('/') || '未知歌手',
+        cover: s.album?.picUrl || '',
+        url: `https://music.163.com/song/media/outer/url?id=${s.id}.mp3`,
+        format: 'MP3',
+        src: '网易云'
+      });
+    });
+  } catch {}
+
+  for (const country of ['HK', 'CN']) {
+    try {
+      const it = await httpGetJson(
+        `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=song&limit=8&country=${country}`
+      );
+      (it?.results || []).forEach(r => {
+        if (r.previewUrl) {
+          pushSong({
+            title: r.trackName,
+            artist: r.artistName || '歌手',
+            cover: r.artworkUrl100 || '',
+            url: r.previewUrl,
+            format: 'M4A',
+            src: `Apple(${country})`
+          });
+        }
+      });
+    } catch {}
+  }
+
+  try {
+    const au = await httpGetJson(
+      `https://discoveryprovider.audius.co/v1/tracks/search?query=${encodeURIComponent(q)}&app_name=studyhub`
+    );
+    (au?.data || []).slice(0, 4).forEach(t => {
+      if (t.id) {
+        pushSong({
+          title: t.title,
+          artist: t.user?.name || 'Audius',
+          cover: t.artwork?.['150x150'] || '',
+          url: `https://discoveryprovider.audius.co/v1/tracks/${t.id}/stream?app_name=studyhub`,
+          format: 'MP3',
+          src: 'Audius完整'
+        });
+      }
+    });
+  } catch {}
+
+  loading.remove();
+  if (!songs.length) {
+    resBox.innerHTML += '<div class="sub-text" style="padding:8px;">未搜到结果，换个关键词试试~</div>';
+    return;
+  }
+
+  songs.slice(0, 16).forEach(s => {
+    const row = document.createElement('div');
+    row.className = 'item-row';
+    row.innerHTML = `
+      <div style="display:flex; gap:10px; align-items:center; flex:1; min-width:0;">
+        ${s.cover
+          ? `<img src="${s.cover}" class="cover-img" />`
+          : `<div class="cover-img" style="display:flex;align-items:center;justify-content:center;">🎵</div>`}
+        <div style="min-width:0;">
+          <div style="font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${s.title}</div>
+          <div class="sub-text">
+            <span class="badge badge-alarm">${s.src}</span>
+            <span class="badge badge-fmt">${s.format}</span> ${s.artist}
+          </div>
+        </div>
+      </div>
+      <div style="display:flex; gap:4px; flex-shrink:0;">
+        <button class="btn btn-sm play-online">▶️</button>
+        <button class="btn btn-sm btn-outline fav-online">⭐收藏</button>
+      </div>
+    `;
+    row.querySelector('.play-online').onclick = () => {
+      playSingleOnlineUrl(s.url, `${s.title} - ${s.artist}`, s.format);
+    };
+    row.querySelector('.fav-online').onclick = async (e) => {
+      tracks.push({
+        id: Date.now() + Math.random(),
+        name: `${s.title} - ${s.artist}`,
+        format: s.format,
+        size: 0,
+        onlineUrl: s.url,
+        isOnlineRef: true
+      });
+      saveTracks();
+      await syncPlaylistWithoutInterrupt();
+      e.target.textContent = '已藏✅';
+      e.target.disabled = true;
+    };
+    resBox.appendChild(row);
+  });
+}
+
+document.getElementById('searchOnlineMusicBtn').addEventListener('click', () => {
+  searchOnlineMusic(document.getElementById('onlineMusicQuery').value);
+});
+
+document.getElementById('onlineMusicQuery').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    searchOnlineMusic(e.target.value);
+  }
+});
+
+document.getElementById('refreshOnlineMusicBtn').addEventListener('click', () => {
+  const cur = document.getElementById('onlineMusicQuery').value.trim() || onlineMusicHist[0] || '华语经典';
+  document.getElementById('onlineMusicQuery').value = cur;
+  searchOnlineMusic(cur);
+  showToast('🔄 已刷新在线曲库');
+});
+
+async function syncPlaylistWithoutInterrupt() {
+  if (!Capacitor.isNativePlatform() || isPlayingOnlineStream) return;
+  try {
+    await NativeTools.audioUpdatePlaylist({
+      paths: tracks.map(getTrackSource),
+      titles: tracks.map(x => x.name || '音乐'),
+      formats: tracks.map(x => x.format || 'AUDIO')
+    });
+  } catch {}
+}
+
+function renderTracks() {
+  const list = document.getElementById('trackList');
+  if (!tracks.length) {
+    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:10px;">本地直读路径播放（零复制不占内存），支持 MP3/FLAC/WAV/M4A/OGG 🎶</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  tracks.forEach((t, i) => {
+    const isActive = !isPlayingOnlineStream && i === currentTrackIdx;
+    const div = document.createElement('div');
+    div.className = 'item-row' + (isActive ? ' playing-row' : '');
+    const sizeText = t.isOnlineRef
+      ? '在线流 · 0MB占用'
+      : `${((t.size || 0) / 1048576).toFixed(2)} MB · 原路径直读`;
+
+    div.innerHTML = `
+      <div style="flex:1; cursor:pointer;" class="play-track">
+        <div>${isActive ? '🔊 ' : ''}<span class="badge badge-fmt">${t.format || 'AUDIO'}</span> ${t.name}</div>
+        <div class="sub-text">${sizeText}</div>
+      </div>
+      <div style="display:flex; gap:4px;">
+        <button class="btn btn-sm btn-outline ren-btn">改名</button>
+        <button class="btn btn-sm btn-danger del-btn">移除</button>
+      </div>
+    `;
+    div.querySelector('.play-track').onclick = () => playTrackAt(i);
+    div.querySelector('.ren-btn').onclick = async () => {
+      const nn = prompt('输入新的歌曲名称：', t.name);
+      if (nn && nn.trim()) {
+        t.name = nn.trim();
+        saveTracks();
+        if (i === currentTrackIdx) {
+          updateTrackUiHeader(t.name, t.format);
+        }
+        await syncPlaylistWithoutInterrupt();
+      }
+    };
+    div.querySelector('.del-btn').onclick = async () => {
+      tracks = tracks.filter(x => x.id !== t.id);
+      if (i < currentTrackIdx) currentTrackIdx--;
+      else if (i === currentTrackIdx) currentTrackIdx = -1;
+      saveTracks();
+      await syncPlaylistWithoutInterrupt();
+    };
+    list.appendChild(div);
+  });
+}
+
+document.getElementById('nativeImportMusicBtn').addEventListener('click', async () => {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const res = await NativeTools.pickAudioRefs({ multiple: true });
+      const added = res.files || [];
+      if (!added.length) return;
+      added.forEach(f => {
+        tracks.push({
+          id: Date.now() + Math.random(),
+          ...f
+        });
+      });
+      saveTracks();
+      await syncPlaylistWithoutInterrupt();
+      showToast(`✅ 已直读关联 ${added.length} 首（0MB复制，未打断播放）`);
+    } catch (e) {
+      if (!String(e.message).includes('取消')) {
+        alert('导入失败：' + e.message);
+      }
+    }
+  } else {
+    document.getElementById('fallbackMusicInput').click();
+  }
+});
+
+document.getElementById('fallbackMusicInput').addEventListener('change', (e) => {
+  for (const file of e.target.files) {
+    tracks.push({
+      id: Date.now() + Math.random(),
+      name: file.name,
+      format: (file.name.split('.').pop() || 'AUDIO').toUpperCase(),
+      size: file.size,
+      webUrl: URL.createObjectURL(file)
+    });
+  }
+  e.target.value = '';
+  saveTracks();
+});
+
+// ==================== 8. A股专区 + 全球股市 + 可滑动走势图 ====================
+let marketData = {
+  updatedAt: '加载中...',
+  globalNews: [],
+  indices: [],
+  stocks: []
+};
+let activeRegion = 'all';
+let activeStockMkt = 'all';
+let customWatchlist = JSON.parse(localStorage.getItem('custom_watchlist_v1') || '[]');
+
+function renderMiniSparkline(history, isUp, height = 40) {
+  if (!history || history.length < 2) {
+    return `<div class="sub-text" style="height:${height}px;">暂无走势</div>`;
+  }
+  const min = Math.min(...history);
+  const max = Math.max(...history);
+  const span = max - min || 1;
+  const w = 240;
+  const pad = 3;
+  const pts = history.map((v, i) => [
+    (pad + (i / (history.length - 1)) * (w - pad * 2)).toFixed(1),
+    (height - pad - ((v - min) / span) * (height - pad * 2)).toFixed(1)
+  ]);
+  const line = pts.map(p => p.join(',')).join(' ');
+  const area = `${pts[0][0]},${height} ${line} ${pts[pts.length - 1][0]},${height}`;
+  const color = isUp ? '#ef4444' : '#10b981';
+  const fill = isUp ? 'rgba(239,68,68,0.14)' : 'rgba(16,185,129,0.14)';
+  return `
+    <svg viewBox="0 0 ${w} ${height}" preserveAspectRatio="none" style="width:100%; height:${height}px; display:block;">
+      <polygon points="${area}" fill="${fill}" />
+      <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+  `;
+}
+
+function mountInteractiveChart(container, history, dates, isUp) {
+  container.innerHTML = '';
+  if (!history || history.length < 2) {
+    container.innerHTML = '<div class="sub-text" style="padding:20px; text-align:center;">暂无走势</div>';
+    return;
+  }
+
+  const scrubBar = document.createElement('div');
+  scrubBar.className = 'scrub-bar';
+  const lastIdx = history.length - 1;
+  const firstVal = history[0] || 1;
+
+  const updateReadout = (idx) => {
+    const val = history[idx];
+    const dt = dates?.[idx] || `点${idx + 1}`;
+    const dp = (((val - firstVal) / firstVal) * 100).toFixed(2);
+    const sign = Number(dp) >= 0 ? '+' : '';
+    scrubBar.innerHTML = `
+      <span>🕒 ${dt}</span>
+      <span>💰 <strong>${val}</strong></span>
+      <span class="${Number(dp) >= 0 ? 'up' : 'down'}">${sign}${dp}%</span>
+    `;
+  };
+  updateReadout(lastIdx);
+
+  const chartBox = document.createElement('div');
+  chartBox.className = 'chart-interactive';
+  const w = 320;
+  const h = 155;
+  const pad = 10;
+  const min = Math.min(...history);
+  const max = Math.max(...history);
+  const span = max - min || 1;
+  const coords = history.map((v, i) => ({
+    x: pad + (i / (history.length - 1)) * (w - pad * 2),
+    y: h - pad - ((v - min) / span) * (h - pad * 2)
+  }));
+  const line = coords.map(c => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
+  const area = `${coords[0].x.toFixed(1)},${h - pad} ${line} ${coords[lastIdx].x.toFixed(1)},${h - pad}`;
+  const color = isUp ? '#ef4444' : '#10b981';
+  const fill = isUp ? 'rgba(239,68,68,0.16)' : 'rgba(16,185,129,0.16)';
+
+  chartBox.innerHTML = `
+    <svg id="scrubSvg" viewBox="0 0 ${w} ${h}" style="width:100%; height:160px; display:block;">
+      <polygon points="${area}" fill="${fill}" />
+      <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.4" />
+      <line id="crossLine" x1="${coords[lastIdx].x}" y1="${pad}" x2="${coords[lastIdx].x}" y2="${h - pad}" stroke="#6366f1" stroke-width="1.4" stroke-dasharray="4 3" />
+      <circle id="crossDot" cx="${coords[lastIdx].x}" cy="${coords[lastIdx].y}" r="5" fill="${color}" stroke="#fff" stroke-width="2" />
+    </svg>
+    <div class="time-row">
+      <span>低: ${min.toFixed(2)}</span>
+      <span>👆 左右滑动看价格与时间</span>
+      <span>高: ${max.toFixed(2)}</span>
+    </div>
+  `;
+
+  const svg = chartBox.querySelector('#scrubSvg');
+  const cl = chartBox.querySelector('#crossLine');
+  const cd = chartBox.querySelector('#crossDot');
+
+  const handleMove = (cx) => {
+    const rect = svg.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (cx - rect.left) / rect.width));
+    const idx = Math.round(ratio * (history.length - 1));
+    const pt = coords[idx];
+    cl.setAttribute('x1', pt.x);
+    cl.setAttribute('x2', pt.x);
+    cd.setAttribute('cx', pt.x);
+    cd.setAttribute('cy', pt.y);
+    updateReadout(idx);
+  };
+
+  svg.addEventListener('touchstart', (e) => {
+    if (e.touches[0]) handleMove(e.touches[0].clientX);
+  }, { passive: true });
+  svg.addEventListener('touchmove', (e) => {
+    if (e.touches[0]) {
+      e.preventDefault();
+      handleMove(e.touches[0].clientX);
+    }
+  }, { passive: false });
+  svg.addEventListener('pointerdown', (e) => handleMove(e.clientX));
+  svg.addEventListener('pointermove', (e) => {
+    if (e.buttons > 0 || e.pointerType === 'mouse') handleMove(e.clientX);
+  });
+
+  container.appendChild(scrubBar);
+  container.appendChild(chartBox);
+}
+
+async function fetchEastMoneyChart(emSecId, range) {
+  const klt = range === '5d' ? 30 : (range === '1y' ? 102 : 101);
+  const lmt = range === '5d' ? 40 : (range === '3mo' ? 65 : (range === '1y' ? 52 : 25));
+  const url =
+    `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${encodeURIComponent(emSecId)}` +
+    `&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56&klt=${klt}&fqt=1&end=20500101&lmt=${lmt}`;
+  const res = await httpGetJson(url);
+  const klines = res?.data?.klines;
+  if (!klines?.length) throw new Error('东财暂无走势');
+
+  const history = [];
+  const dates = [];
+  let lo = 0;
+  let lh = 0;
+  let ll = 0;
+  let lv = 0;
+
+  klines.forEach(line => {
+    const [dt, op, cl, hi, l, vol] = line.split(',');
+    dates.push(dt);
+    history.push(Number(Number(cl).toFixed(2)));
+    lo = Number(op);
+    lh = Number(hi);
+    ll = Number(l);
+    lv = Number(vol);
+  });
+
+  const price = history[history.length - 1];
+  const prev = history.length >= 2 ? history[history.length - 2] : (Number(res?.data?.preKPrice) || price);
+  const change = Number((price - prev).toFixed(2));
+  const changePct = prev ? Number(((change / prev) * 100).toFixed(2)) : 0;
+
+  return { price, change, changePct, history, dates, open: lo, high: lh, low: ll, volume: lv };
+}
+
+async function fetchYahooChart(symbol, range, interval) {
+  const cData = await httpGetJson(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`
+  );
+  const r = cData?.chart?.result?.[0];
+  if (!r) throw new Error('Yahoo 无数据');
+
+  const meta = r.meta || {};
+  const q = r.indicators?.quote?.[0] || {};
+  const rawCloses = q.close || [];
+  const ts = r.timestamp || [];
+  const history = [];
+  const dates = [];
+
+  for (let i = 0; i < rawCloses.length; i++) {
+    if (rawCloses[i] != null) {
+      history.push(Number(rawCloses[i].toFixed(2)));
+      const d = new Date((ts[i] || 0) * 1000);
+      if (range === '5d') {
+        dates.push(
+          `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ` +
+          `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+        );
+      } else {
+        dates.push(
+          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        );
+      }
+    }
+  }
+
+  const price = Number((meta.regularMarketPrice || history[history.length - 1] || 0).toFixed(2));
+  const prev = Number((meta.chartPreviousClose || history[0] || price).toFixed(2));
+  const change = Number((price - prev).toFixed(2));
+  const changePct = prev ? Number(((change / prev) * 100).toFixed(2)) : 0;
+
+  return {
+    price,
+    change,
+    changePct,
+    history,
+    dates,
+    open: Number((q.open?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)),
+    high: Number((q.high?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)),
+    low: Number((q.low?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)),
+    volume: q.volume?.filter(v => v != null).slice(-1)[0] || 0
+  };
+}
+
+async function fetchSmartChart(item, range, interval) {
+  if (item.emSecId) {
+    try {
+      return await fetchEastMoneyChart(item.emSecId, range);
+    } catch {}
+  }
+  try {
+    return await fetchYahooChart(item.symbol, range, interval);
+  } catch (e) {
+    const s = item.symbol || '';
+    let guessed = '';
+    if (s.endsWith('.SS')) guessed = `1.${s.replace('.SS', '')}`;
+    else if (s.endsWith('.SZ')) guessed = `0.${s.replace('.SZ', '')}`;
+    else if (s.endsWith('.HK')) guessed = `116.${s.replace('.HK', '').padStart(5, '0')}`;
+    if (guessed) {
+      return await fetchEastMoneyChart(guessed, range);
+    }
+    throw e;
+  }
+}
+
+function openStockDetailModal(item) {
+  const isUp = (item.changePct || 0) >= 0;
+  const sign = isUp ? '+' : '';
+  const box = document.createElement('div');
+  const newsHtml = (item.news || []).length
+    ? item.news.map(n => `
+        <a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener">
+          <div style="font-weight:500;">${n.title}</div>
+          <div class="sub-text">${n.source || '财经'} · ${n.time || ''}</div>
+        </a>
+      `).join('')
+    : '<div class="sub-text">暂无快讯</div>';
+
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">
+      <span style="font-size:26px; font-weight:700;">${item.price ?? '--'}</span>
+      <span class="${isUp ? 'up' : 'down'}" style="font-size:15px;">
+        ${sign}${item.change ?? 0} (${sign}${item.changePct ?? 0}%)
+      </span>
+    </div>
+    <div class="day-tabs" id="rangeTabs" style="margin-bottom:6px;">
+      <button class="day-pill" data-r="5d" data-i="30m">5日分时</button>
+      <button class="day-pill active" data-r="1mo" data-i="1d">1月</button>
+      <button class="day-pill" data-r="3mo" data-i="1d">3月</button>
+      <button class="day-pill" data-r="1y" data-i="1wk">1年</button>
+    </div>
+    <div id="interactiveChartHost" style="margin-bottom:10px;"></div>
+    ${item.open ? `
+      <div class="form-grid" style="font-size:12px; background:var(--card-sub); padding:10px; border-radius:8px; margin-bottom:10px;">
+        <div>今开：<strong>${item.open}</strong></div>
+        <div>成交量：<strong>${item.volume ? (item.volume / 10000).toFixed(1) + '万' : '--'}</strong></div>
+        <div>最高：<strong class="up">${item.high}</strong></div>
+        <div>最低：<strong class="down">${item.low}</strong></div>
+      </div>` : ''}
+    <div style="font-weight:600; margin-bottom:6px;">📰 每日消息汇总</div>
+    <div class="news-box">${newsHtml}</div>
+  `;
+
+  const host = box.querySelector('#interactiveChartHost');
+  mountInteractiveChart(host, item.history, item.dates, isUp);
+
+  box.querySelectorAll('#rangeTabs .day-pill').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      box.querySelectorAll('#rangeTabs .day-pill').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      host.innerHTML = '<div class="sub-text" style="padding:30px; text-align:center;">加载走势中...</div>';
+      try {
+        const res = await fetchSmartChart(item, btn.dataset.r, btn.dataset.i);
+        mountInteractiveChart(host, res.history, res.dates, res.changePct >= 0);
+      } catch (e) {
+        host.innerHTML = `<div class="sub-text" style="color:#dc2626; padding:12px;">加载失败：${e.message}</div>`;
+      }
+    });
+  });
+
+  openModal(`${item.name} (${item.symbol})`, box);
+}
+
+function renderStocks(keyword = '') {
+  document.getElementById('stockUpdated').textContent = '更新时间：' + (marketData.updatedAt || '--');
+  const indices = (marketData.indices || []).filter(i => activeRegion === 'all' || i.region === activeRegion);
+  const idxGrid = document.getElementById('indicesGrid');
+  idxGrid.innerHTML = '';
+
+  indices.forEach(i => {
+    const isUp = (i.changePct || 0) >= 0;
+    const sign = isUp ? '+' : '';
+    const box = document.createElement('div');
+    box.className = 'idx-box';
+    box.innerHTML = `
+      <div style="font-size:12px; color:var(--sub);">${i.region} · ${i.name}</div>
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin:2px 0;">
+        <span style="font-size:15px; font-weight:700;">${i.price}</span>
+        <span class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${sign}${i.changePct}%</span>
+      </div>
+      ${renderMiniSparkline(i.history, isUp, 36)}
+    `;
+    box.onclick = () => openStockDetailModal(i);
+    idxGrid.appendChild(box);
+  });
+
+  const gnList = document.getElementById('globalNewsList');
+  const gNews = marketData.globalNews || [];
+  gnList.innerHTML = gNews.length
+    ? gNews.map(n => `
+        <a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener">
+          <div style="font-size:13px;">${n.title}</div>
+          <div class="sub-text">${n.source} · ${n.time}</div>
+        </a>
+      `).join('')
+    : '<div class="sub-text">点击“刷新”获取每日头条</div>';
+
+  const allStocks = [...customWatchlist, ...(marketData.stocks || [])];
+  const kw = keyword.trim().toLowerCase();
+  const filtered = allStocks.filter(s => {
+    const mktOk = activeStockMkt === 'all' || s.market === activeStockMkt;
+    const kwOk = !kw ||
+      (s.name || '').toLowerCase().includes(kw) ||
+      (s.symbol || '').toLowerCase().includes(kw) ||
+      (s.market || '').toLowerCase().includes(kw);
+    return mktOk && kwOk;
+  });
+
+  const list = document.getElementById('stocksList');
+  list.innerHTML = '';
+  if (!filtered.length) {
+    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:12px;">本地未匹配，请点上方 <strong>🔍 全网搜</strong> 查全球任意股票！</div>';
+    return;
+  }
+
+  filtered.forEach(s => {
+    const isUp = (s.changePct || 0) >= 0;
+    const sign = isUp ? '+' : '';
+    const newsItems = (s.news || []).slice(0, 4).map(n => `
+      <a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener">
+        <div>${n.title}</div>
+        <div class="sub-text">${n.source || ''} · ${n.time || ''}</div>
+      </a>
+    `).join('');
+
+    const div = document.createElement('div');
+    div.className = 'item-row';
+    div.style.flexDirection = 'column';
+    div.innerHTML = `
+      <div style="display:flex; justify-content:space-between; width:100%; align-items:center; cursor:pointer;" class="st-head">
+        <div>
+          <strong>${s.name}</strong> <span class="badge">${s.market || '全球'}</span>
+          <div class="sub-text">${s.symbol} · 点开或停顿0.85秒看大图</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:16px; font-weight:700;">${s.price}</div>
+          <div class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${sign}${s.changePct}%</div>
+        </div>
+      </div>
+      <div style="width:100%; cursor:pointer;" class="st-chart">${renderMiniSparkline(s.history, isUp, 44)}</div>
+      <div class="news-box" style="width:100%;">
+        <div style="font-weight:600; margin-bottom:4px;">📰 每日消息汇总 (${(s.news || []).length}条)</div>
+        ${newsItems || '<div class="sub-text">暂无快讯</div>'}
+      </div>
+    `;
+    div.querySelector('.st-head').onclick = () => openStockDetailModal(s);
+    div.querySelector('.st-chart').onclick = () => openStockDetailModal(s);
+    list.appendChild(div);
+  });
+}
+
+function mapEastMoneyToSymbol(item) {
+  const code = String(item.Code || '');
+  const mkt = String(item.MktNum || '');
+  if (mkt === '1') return `${code}.SS`;
+  if (mkt === '0') return `${code}.SZ`;
+  if (mkt === '116') {
+    const clean = code.length === 5 && code.startsWith('0') ? code.slice(1) : code.padStart(4, '0');
+    return `${clean}.HK`;
+  }
+  return code;
+}
+
+async function liveSearchGlobalStock(query) {
+  const q = query.trim();
+  const resBox = document.getElementById('liveSearchResult');
+  if (!q) {
+    resBox.innerHTML = '';
+    return;
+  }
+
+  resBox.innerHTML = '<div class="card" style="background:var(--primary-light);">🔍 正在全网检索 A股 / 港股 / 美股 / 全球个股与板块...</div>';
+  const candidates = [];
+  const seen = new Set();
+  const pushCand = (c) => {
+    if (c.symbol && !seen.has(c.symbol.toUpperCase())) {
+      seen.add(c.symbol.toUpperCase());
+      candidates.push(c);
+    }
+  };
+
+  try {
+    const emData = await httpGetJson(
+      `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=12`
+    );
+    const rows = emData?.QuotationCodeTable?.Data || [];
+    rows.sort((a, b) => (String(a.MktNum) === '90' ? 1 : 0) - (String(b.MktNum) === '90' ? 1 : 0));
+    rows.forEach(r => {
+      pushCand({
+        symbol: mapEastMoneyToSymbol(r),
+        emSecId: r.QuoteID || `${r.MktNum}.${r.Code}`,
+        name: r.Name || r.Code,
+        market: r.SecurityTypeName || 'A股'
+      });
+    });
+  } catch {}
+
+  try {
+    const yfData = await httpGetJson(
+      `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=6&newsCount=2`
+    );
+    (yfData.quotes || []).forEach(qt => {
+      if (qt.symbol) {
+        pushCand({
+          symbol: qt.symbol,
+          emSecId: '',
+          name: qt.shortname || qt.longname || qt.symbol,
+          market: qt.exchDisp || qt.exchange || '全球'
+        });
+      }
+    });
+  } catch {}
+
+  if (!candidates.length) {
+    resBox.innerHTML = '<div class="sub-text" style="padding:8px;">未找到匹配股票。</div>';
+    return;
+  }
+
+  resBox.innerHTML = '<div class="sub-text" style="margin-bottom:6px;">🌐 全网检索结果（个股优先，点击看走势图）：</div>';
+  candidates.slice(0, 10).forEach(cand => {
+    const row = document.createElement('div');
+    row.className = 'card';
+    row.style.cssText = 'padding:10px; margin-bottom:8px; border:1px solid var(--border); background:var(--card-sub); cursor:pointer;';
+    row.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <strong>${cand.name}</strong>
+          <div class="sub-text">${cand.symbol} · ${cand.market}</div>
+        </div>
+        <button class="btn btn-sm">看态势图</button>
+      </div>
+    `;
+    row.onclick = async () => {
+      row.querySelector('button').textContent = '加载中...';
+      try {
+        const chartInfo = await fetchSmartChart(cand, '1mo', '1d');
+        let newsList = [];
+        try {
+          const xmlText = await httpGetText(
+            `https://news.google.com/rss/search?q=${encodeURIComponent(cand.name + ' 股价 新闻')}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`
+          );
+          const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+          newsList = Array.from(doc.querySelectorAll('item')).slice(0, 6).map(it => ({
+            title: it.querySelector('title')?.textContent || '',
+            source: it.querySelector('source')?.textContent || '财经资讯',
+            time: (it.querySelector('pubDate')?.textContent || '').slice(0, 22),
+            link: it.querySelector('link')?.textContent || '#'
+          }));
+        } catch {}
+        const fullStock = { ...cand, ...chartInfo, news: newsList };
+        openStockDetailModal(fullStock);
+        customWatchlist = [fullStock, ...customWatchlist.filter(x => x.symbol !== fullStock.symbol)].slice(0, 12);
+        localStorage.setItem('custom_watchlist_v1', JSON.stringify(customWatchlist));
+        renderStocks('');
+      } catch (err) {
+        alert('拉取走势失败：' + err.message);
+      } finally {
+        row.querySelector('button').textContent = '看态势图';
+      }
+    };
+    resBox.appendChild(row);
+  });
+}
+
+async function fetchMarketData(withToast = false) {
+  const repo = localStorage.getItem('github_stock_repo') || DEFAULT_GITHUB_REPO;
+  document.getElementById('stockUpdated').textContent = `正在同步 ${repo} 股市...`;
+  try {
+    marketData = await httpGetJson(`https://raw.githubusercontent.com/${repo}/main/data/market_data.json?t=${Date.now()}`);
+    localStorage.setItem('cached_market_v3', JSON.stringify(marketData));
+    if (withToast) {
+      showToast('✅ 股市与每日新闻已刷新');
+    }
+  } catch (e) {
+    const cached = localStorage.getItem('cached_market_v3');
+    if (cached) marketData = JSON.parse(cached);
+    document.getElementById('stockUpdated').textContent = '同步失败：' + e.message;
+  }
+  renderStocks(document.getElementById('stockSearch').value);
+}
+
+document.querySelectorAll('#regionTabs .day-pill').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#regionTabs .day-pill').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeRegion = btn.dataset.region;
+    renderStocks(document.getElementById('stockSearch').value);
+  });
+});
+
+document.querySelectorAll('#stockMarketTabs .day-pill').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#stockMarketTabs .day-pill').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeStockMkt = btn.dataset.mkt;
+    renderStocks(document.getElementById('stockSearch').value);
+  });
+});
+
+document.getElementById('refreshStocksBtn').addEventListener('click', () => fetchMarketData(true));
+document.getElementById('stockSearch').addEventListener('input', (e) => renderStocks(e.target.value));
+document.getElementById('stockSearch').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') liveSearchGlobalStock(e.target.value);
+});
+document.getElementById('liveSearchBtn').addEventListener('click', () => {
+  liveSearchGlobalStock(document.getElementById('stockSearch').value);
+});
+document.getElementById('configRepoBtn').addEventListener('click', () => {
+  const val = prompt('GitHub 股市数据仓库（用户名/仓库名）：', localStorage.getItem('github_stock_repo') || DEFAULT_GITHUB_REPO);
+  if (val && val.trim()) {
+    localStorage.setItem('github_stock_repo', val.trim());
+    fetchMarketData(true);
+  }
+});
+
+// ==================== 9. 词典级翻译 + 彻底修复的移动端双击跳译 ====================
+let transHistory = JSON.parse(localStorage.getItem('trans_hist_v1') || '[]');
+let lastSrcText = '';
+let lastSrcLang = 'en';
+let lastTransResult = '';
+let lastDstLang = 'zh-CN';
+
+function wrapDoubleTapWords(sentence) {
+  const safe = (sentence || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return safe.replace(/([A-Za-z][A-Za-z'-]*)/g, '<span class="tap-word" data-word="$1">$1</span>');
+}
+
+function detectSimpleLang(text, selectedFrom) {
+  if (selectedFrom && selectedFrom !== 'auto') return selectedFrom;
+  if (/[\u4e00-\u9fa5]/.test(text)) return 'zh-CN';
+  if (/[\u3040-\u30ff]/.test(text)) return 'ja';
+  if (/[\uac00-\ud7af]/.test(text)) return 'ko';
+  return 'en';
+}
+
+function renderTransHistory() {
+  const list = document.getElementById('transHistory');
+  if (!transHistory.length) {
+    list.innerHTML = '<div class="sub-text" style="text-align:center;">暂无查词记录</div>';
+    return;
+  }
+  list.innerHTML = '';
+  transHistory.slice(0, 15).forEach(h => {
+    const div = document.createElement('div');
+    div.className = 'item-row';
+    div.style.cursor = 'pointer';
+    div.innerHTML = `
+      <div style="flex:1;">
+        <div style="font-size:13px; font-weight:500;">${h.src}</div>
+        <div class="sub-text" style="color:var(--primary);">${h.dst}</div>
+      </div>
+    `;
+    div.onclick = () => {
+      document.getElementById('transInput').value = h.src;
+      doTranslate(false);
+    };
+    list.appendChild(div);
+  });
+}
+
+async function fetchRichDictionary(query) {
+  const rich = {
+    ukPhone: '',
+    usPhone: '',
+    meanings: [],
+    phrases: [],
+    examples: []
+  };
+
+  try {
+    const yd = await httpGetJson(`https://dict.youdao.com/jsonapi?q=${encodeURIComponent(query)}`);
+    const ecWord = yd?.ec?.word?.[0];
+    if (ecWord) {
+      rich.ukPhone = ecWord.ukphone || '';
+      rich.usPhone = ecWord.usphone || '';
+      (ecWord.trs || []).forEach(tr => {
+        const line = tr?.tr?.[0]?.l?.i?.[0];
+        if (line) rich.meanings.push(line);
+      });
+    }
+
+    const ceWord = yd?.ce?.word?.[0];
+    if (ceWord && !rich.meanings.length) {
+      if (ceWord.phone) rich.usPhone = ceWord.phone;
+      (ceWord.trs || []).forEach(tr => {
+        const parts = tr?.tr?.[0]?.l?.i || [];
+        const txt = parts.map(p => (typeof p === 'string' ? p : (p['#text'] || ''))).join('').trim();
+        if (txt) rich.meanings.push(txt);
+      });
+    }
+
+    (yd?.phrs?.phrs || []).slice(0, 8).forEach(p => {
+      const en = p?.phr?.headword?.l?.i;
+      const zh = p?.phr?.trs?.[0]?.tr?.l?.i;
+      if (en && zh) rich.phrases.push({ en, zh });
+    });
+
+    (yd?.blng_sents_part?.['sentence-pair'] || []).slice(0, 6).forEach(sp => {
+      const en = (sp.sentence || '').replace(/<[^>]+>/g, '');
+      const zh = (sp['sentence-translation'] || '').replace(/<[^>]+>/g, '');
+      if (en) rich.examples.push({ en, zh });
+    });
+  } catch {}
+
+  if (/^[a-zA-Z-]+$/.test(query) && (!rich.usPhone || !rich.examples.length)) {
+    try {
+      const fd = await httpGetJson(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(query)}`);
+      const entry = Array.isArray(fd) ? fd[0] : null;
+      if (entry) {
+        if (!rich.usPhone) {
+          rich.usPhone = entry.phonetic || entry.phonetics?.find(p => p.text)?.text || '';
+        }
+        (entry.meanings || []).forEach(m => {
+          (m.definitions || []).slice(0, 2).forEach(def => {
+            if (def.example && rich.examples.length < 6) {
+              rich.examples.push({
+                en: def.example,
+                zh: `(${m.partOfSpeech}) ${def.definition}`
+              });
+            }
+          });
+        });
+      }
+    } catch {}
+  }
+
+  return rich;
+}
+
+function renderRichDictBox(rich) {
+  const box = document.getElementById('dictRichBox');
+  box.innerHTML = '';
+  if (!rich.ukPhone && !rich.usPhone && !rich.meanings.length && !rich.phrases.length && !rich.examples.length) {
+    return;
+  }
+
+  if (rich.ukPhone || rich.usPhone) {
+    const phDiv = document.createElement('div');
+    phDiv.className = 'dict-sec';
+    phDiv.innerHTML = `
+      <div class="dict-sec-title">🔤 音标发音</div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; font-size:13px;">
+        ${rich.ukPhone ? `<span class="badge">英 /${rich.ukPhone.replace(/\//g, '')}/</span>` : ''}
+        ${rich.usPhone ? `<span class="badge badge-alarm">美 /${rich.usPhone.replace(/\//g, '')}/</span>` : ''}
+      </div>
+    `;
+    box.appendChild(phDiv);
+  }
+
+  if (rich.meanings.length) {
+    const mDiv = document.createElement('div');
+    mDiv.className = 'dict-sec';
+    mDiv.innerHTML =
+      `<div class="dict-sec-title">📖 词性释义</div>` +
+      rich.meanings.slice(0, 6).map(m => `<div style="font-size:13px; margin-bottom:4px;">• ${m}</div>`).join('');
+    box.appendChild(mDiv);
+  }
+
+  if (rich.phrases.length) {
+    const pDiv = document.createElement('div');
+    pDiv.className = 'dict-sec';
+    pDiv.innerHTML = `<div class="dict-sec-title">🔗 常用短语（点一下或停顿0.85秒查词）</div>`;
+    rich.phrases.forEach(ph => {
+      const chip = document.createElement('span');
+      chip.className = 'phrase-chip';
+      chip.innerHTML = `<strong>${ph.en}</strong> <span class="sub-text">${ph.zh}</span>`;
+      chip.onclick = () => {
+        document.getElementById('transInput').value = ph.en;
+        doTranslate(false);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      };
+      pDiv.appendChild(chip);
+    });
+    box.appendChild(pDiv);
+  }
+
+  if (rich.examples.length) {
+    const eDiv = document.createElement('div');
+    eDiv.className = 'dict-sec';
+    eDiv.innerHTML = `<div class="dict-sec-title">💬 双语例句（👆 双击或悬停0.85秒任意英文单词直接跳译）</div>`;
+    rich.examples.forEach(ex => {
+      const item = document.createElement('div');
+      item.className = 'example-item';
+      item.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+          <div style="flex:1;">${wrapDoubleTapWords(ex.en)}</div>
+          <button class="btn btn-sm btn-outline ex-speak" title="朗读例句">🔊</button>
+        </div>
+        ${ex.zh ? `<div class="sub-text">${ex.zh}</div>` : ''}
+      `;
+      item.querySelector('.ex-speak').onclick = () => speakSingle(ex.en, 'en');
+      eDiv.appendChild(item);
+    });
+    box.appendChild(eDiv);
+  }
+}
+
+// 手机端底层 touchend 判双击（彻底解决安卓双击选中文字导致的失效）
+let primedWordEl = null;
+let primedWordText = '';
+let primedWordTime = 0;
+let wordTouchStartX = 0;
+let wordTouchStartY = 0;
+
+function jumpTranslateWord(wordEl) {
+  const w = wordEl?.dataset?.word;
+  if (!w) return;
+  if (primedWordEl) {
+    primedWordEl.classList.remove('primed');
+  }
+  primedWordEl = null;
+  primedWordText = '';
+  primedWordTime = 0;
+
+  wordEl.classList.add('flash');
+  setTimeout(() => wordEl.classList.remove('flash'), 280);
+  if (navigator.vibrate) {
+    navigator.vibrate(15);
+  }
+  showToast(`🔍 正在跳转翻译「${w}」`);
+  document.getElementById('transInput').value = w;
+  document.getElementById('transFrom').value = 'en';
+  document.getElementById('transTo').value = 'zh-CN';
+  doTranslate(false);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+const dictRichBoxEl = document.getElementById('dictRichBox');
+
+dictRichBoxEl.addEventListener('touchstart', (e) => {
+  const t = e.touches[0];
+  if (t) {
+    wordTouchStartX = t.clientX;
+    wordTouchStartY = t.clientY;
+  }
+}, { passive: true });
+
+dictRichBoxEl.addEventListener('touchend', (e) => {
+  const span = e.target.closest('.tap-word');
+  if (!span) return;
+  const t = e.changedTouches[0];
+  if (t && Math.hypot(t.clientX - wordTouchStartX, t.clientY - wordTouchStartY) > 14) {
+    return;
+  }
+
+  const w = span.dataset.word;
+  const now = Date.now();
+  if (w === primedWordText && now - primedWordTime < 650) {
+    e.preventDefault();
+    jumpTranslateWord(span);
+  } else {
+    if (primedWordEl) {
+      primedWordEl.classList.remove('primed');
+    }
+    primedWordEl = span;
+    primedWordText = w;
+    primedWordTime = now;
+    span.classList.add('primed');
+    showToast(`👆 再点一下「${w}」跳转翻译`, 1200);
+    setTimeout(() => {
+      if (primedWordEl === span && Date.now() - primedWordTime >= 650) {
+        span.classList.remove('primed');
+      }
+    }, 700);
+  }
+}, { passive: false });
+
+dictRichBoxEl.addEventListener('dblclick', (e) => {
+  const span = e.target.closest('.tap-word');
+  if (span) {
+    jumpTranslateWord(span);
+  }
+});
+
+async function speakSingle(text, lang) {
+  if (!text) return;
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await NativeTools.speakText({ text, lang });
+    } catch (e) {
+      alert('朗读失败：' + e.message);
+    }
+  } else if ('speechSynthesis' in window) {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = lang;
+    speechSynthesis.speak(u);
+  }
+}
+
+async function doTranslate(withToast = false) {
+  const text = document.getElementById('transInput').value.trim();
+  if (!text) {
+    if (withToast) showToast('请先输入要翻译的内容');
+    return;
+  }
+
+  const from = document.getElementById('transFrom').value;
+  let to = document.getElementById('transTo').value;
+  if (from === 'auto' && to === 'en' && /^[a-zA-Z0-9\s.,!?;:'"()-]+$/.test(text)) {
+    to = 'zh-CN';
+    document.getElementById('transTo').value = 'zh-CN';
+  }
+
+  const srcLang = detectSimpleLang(text, from);
+  lastSrcText = text;
+  lastSrcLang = srcLang;
+  lastDstLang = to;
+
+  const outEl = document.getElementById('transOutput');
+  outEl.textContent = '🌐 正在查词与翻译...';
+  document.getElementById('dictRichBox').innerHTML = '';
+
+  let translated = '';
+  const richPromise = text.length <= 45 ? fetchRichDictionary(text) : Promise.resolve(null);
+
+  try {
+    const g = await httpGetJson(
+      `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(from)}&tl=${encodeURIComponent(to)}&dt=t&q=${encodeURIComponent(text)}`
+    );
+    if (Array.isArray(g?.[0])) {
+      translated = g[0].map(seg => seg?.[0] || '').join('');
+    }
+  } catch {}
+
+  if (!translated) {
+    try {
+      const mm = await httpGetJson(
+        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text.slice(0, 480))}&langpair=${encodeURIComponent(srcLang + '|' + to)}`
+      );
+      translated = mm?.responseData?.translatedText || '';
+    } catch {}
+  }
+
+  const rich = await richPromise;
+  if (!translated && rich?.meanings?.length) {
+    translated = rich.meanings[0];
+  }
+  if (!translated) {
+    outEl.textContent = '翻译失败，请检查网络连接后重试。';
+    return;
+  }
+
+  lastTransResult = translated;
+  outEl.textContent = translated;
+  if (rich) {
+    renderRichDictBox(rich);
+  }
+  if (withToast) {
+    showToast('✅ 翻译结果已刷新');
+  }
+
+  transHistory = [
+    { src: text.slice(0, 120), dst: translated.slice(0, 160) },
+    ...transHistory.filter(x => x.src !== text.slice(0, 120))
+  ].slice(0, 20);
+  localStorage.setItem('trans_hist_v1', JSON.stringify(transHistory));
+  renderTransHistory();
+}
+
+document.getElementById('doTranslateBtn').addEventListener('click', () => doTranslate(false));
+document.getElementById('refreshTransBtn').addEventListener('click', () => doTranslate(true));
+
+document.getElementById('clearTransBtn').addEventListener('click', () => {
+  document.getElementById('transInput').value = '';
+  document.getElementById('transOutput').textContent = '译文将显示在这里...';
+  document.getElementById('dictRichBox').innerHTML = '';
+  lastSrcText = '';
+  lastTransResult = '';
+});
+
+document.getElementById('swapLangBtn').addEventListener('click', () => {
+  const f = document.getElementById('transFrom');
+  const t = document.getElementById('transTo');
+  if (f.value === 'auto') {
+    f.value = t.value;
+    t.value = t.value === 'zh-CN' ? 'en' : 'zh-CN';
+  } else {
+    const tmp = f.value;
+    f.value = t.value;
+    t.value = tmp;
+  }
+});
+
+document.getElementById('copyTransBtn').addEventListener('click', async () => {
+  if (!lastTransResult) return;
+  try {
+    await navigator.clipboard.writeText(lastTransResult);
+    showToast('📋 已复制译文');
+  } catch {
+    prompt('请长按复制译文：', lastTransResult);
+  }
+});
+
+document.getElementById('speakSrcBtn').addEventListener('click', () => speakSingle(lastSrcText, lastSrcLang));
+document.getElementById('speakTransBtn').addEventListener('click', () => speakSingle(lastTransResult, lastDstLang));
+
+document.getElementById('speakBothBtn').addEventListener('click', async () => {
+  if (!lastSrcText || !lastTransResult) return;
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await NativeTools.speakPair({
+        text1: lastSrcText,
+        lang1: lastSrcLang,
+        text2: lastTransResult,
+        lang2: lastDstLang
+      });
+    } catch (e) {
+      alert('连读失败：' + e.message);
+    }
+  } else {
+    speakSingle(lastSrcText, lastSrcLang);
+    setTimeout(() => speakSingle(lastTransResult, lastDstLang), 1500);
+  }
+});
+
+document.getElementById('clearTransHistBtn').addEventListener('click', () => {
+  transHistory = [];
+  localStorage.setItem('trans_hist_v1', '[]');
+  renderTransHistory();
+});
+
+document.getElementById('ocrTranslateBtn').addEventListener('click', async () => {
+  if (!Capacitor.isNativePlatform()) {
+    alert('请在安卓 App 中使用识图翻译！');
+    return;
+  }
+  try {
+    const res = await NativeTools.pickFiles({ accept: '*/*', multiple: false });
+    const f = res.files?.[0];
+    if (!f) return;
+    document.getElementById('transOutput').textContent = '🧠 正在离线识别文字...';
+    const ex = await NativeTools.extractText({ localPath: f.localPath });
+    if (ex.text) {
+      document.getElementById('transInput').value = ex.text;
+      await doTranslate(false);
+    } else {
+      alert('未识别到文字');
+    }
+  } catch (e) {
+    if (!String(e.message).includes('取消')) {
+      alert('识图翻译失败：' + e.message);
+    }
+  }
+});
+
+// ==================== 10. 启动初始化 & 每次进入/切回App自动更新联网数据 ====================
+let lastAutoSyncTime = 0;
+
+async function autoSyncOnAppEnter() {
+  lastAutoSyncTime = Date.now();
+  await Promise.allSettled([
+    detectDeviceAndNetworkZones(false),
+    fetchMarketData(false)
+  ]);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && Date.now() - lastAutoSyncTime > 45000) {
+    autoSyncOnAppEnter();
+  }
+});
+
+(async function bootstrap() {
+  applyAppearance();
+  updateNavIndicatorPosition(0);
+  updateLiveClock();
+  setInterval(updateLiveClock, 1000);
+  await initNotificationChannels();
+  renderDayTabs();
+  renderCourses();
+  renderExams();
+  renderFiles();
+  renderTracks();
+  renderOnlineMusicHistory(document.getElementById('onlineMusicResults'));
+  renderTransHistory();
+  await autoSyncOnAppEnter();
+})();
