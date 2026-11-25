@@ -6,7 +6,179 @@ const DEFAULT_GITHUB_REPO = 'moumouguo975-bit/study-stock-app';
 const DAYS_LABEL = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const RRULE_DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
-// ==================== 1. 多样提醒引擎（App响铃 + 设备系统闹钟 + 设备系统日历，关App仍有效） ====================
+// ==================== 通用网络工具 ====================
+async function httpGetJson(url) {
+  if (Capacitor.isNativePlatform()) {
+    const res = await CapacitorHttp.get({
+      url,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36' }
+    });
+    return typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+  }
+  const res = await fetch(url);
+  return await res.json();
+}
+
+async function httpGetText(url) {
+  if (Capacitor.isNativePlatform()) {
+    const res = await CapacitorHttp.get({
+      url,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    return typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+  }
+  const res = await fetch(url);
+  return await res.text();
+}
+
+// ==================== 1. 实时时钟 + 天气 + 今日智能建议 ====================
+let currentWeatherInfo = null;
+
+const WMO_MAP = {
+  0: ['☀️', '晴朗'],
+  1: ['🌤️', '晴间多云'],
+  2: ['⛅', '多云'],
+  3: ['☁️', '阴天'],
+  45: ['🌫️', '有雾'],
+  48: ['🌫️', '冻雾'],
+  51: ['🌦️', '小毛雨'],
+  53: ['🌦️', '毛毛雨'],
+  55: ['🌧️', '浓毛雨'],
+  61: ['🌧️', '小雨'],
+  63: ['🌧️', '中雨'],
+  65: ['🌧️', '大雨'],
+  71: ['❄️', '小雪'],
+  73: ['❄️', '中雪'],
+  75: ['❄️', '大雪'],
+  80: ['🌦️', '阵雨'],
+  81: ['🌧️', '中阵雨'],
+  82: ['⛈️', '强阵雨'],
+  95: ['⛈️', '雷阵雨'],
+  96: ['⛈️', '雷暴冰雹'],
+  99: ['⛈️', '强雷暴']
+};
+
+function wmoDesc(code) {
+  return WMO_MAP[code] || ['🌤️', '多云'];
+}
+
+function updateLiveClock() {
+  const now = new Date();
+  document.getElementById('liveClock').textContent = now.toTimeString().slice(0, 8);
+  document.getElementById('liveDate').textContent =
+    `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${DAYS_LABEL[now.getDay()]}`;
+}
+
+function updateSmartAdvice() {
+  const tips = [];
+  const now = new Date();
+  const hr = now.getHours();
+  const todayDay = now.getDay();
+
+  // 天气穿衣与出行建议
+  if (currentWeatherInfo) {
+    const { temp, precip, code } = currentWeatherInfo;
+    if (precip >= 40 || (code >= 51 && code <= 99)) {
+      tips.push(`☔ 今日降水概率 ${precip}%，出门上课或办事记得带伞！`);
+    }
+    if (temp <= 8) {
+      tips.push(`🧥 气温较低 (${temp}°C)，注意穿厚外套防寒保暖。`);
+    } else if (temp >= 29) {
+      tips.push(`🕶️ 气温偏高 (${temp}°C)，注意防晒并多喝水。`);
+    } else {
+      tips.push(`🌤️ 当前 ${temp}°C 体感舒适，适合专注学习或户外散步。`);
+    }
+  }
+
+  // 今日课表建议
+  const todayCourses = courses
+    .filter(c => Number(c.day) === todayDay)
+    .sort((a, b) => a.start.localeCompare(b.start));
+
+  if (todayCourses.length) {
+    const nowHM = `${String(hr).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const nextC = todayCourses.find(c => c.start >= nowHM);
+    if (nextC) {
+      tips.push(`📚 今天共 ${todayCourses.length} 节课，下一节《${nextC.name}》(${nextC.start} ${nextC.room || ''})。`);
+    } else {
+      tips.push(`✅ 今天 ${todayCourses.length} 节课已全部结束，可以听歌放松或复盘笔记！`);
+    }
+  } else {
+    tips.push(`🗓️ 今天没有排课，适合自主复习、整理资料或看看股市行情。`);
+  }
+
+  // 近期考试与作息建议
+  const upcoming = exams
+    .filter(e => new Date(e.datetime).getTime() > Date.now())
+    .sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0];
+  if (upcoming) {
+    const days = Math.ceil((new Date(upcoming.datetime).getTime() - Date.now()) / 86400000);
+    if (days <= 7) {
+      tips.push(`🎯 距离【${upcoming.name}】仅剩 ${days} 天，建议今晚安排 1 小时重点复习！`);
+    }
+  }
+  if (hr >= 22 || hr < 6) {
+    tips.push(`🌙 夜深了，可以去【音乐】页开个 30 分钟雨声白噪音早点休息。`);
+  }
+
+  document.getElementById('smartAdviceBox').innerHTML =
+    `<strong>💡 今日智能建议</strong><br/>${tips.slice(0, 3).join('<br/>')}`;
+}
+
+async function fetchWeatherByCity(cityName) {
+  const city = (cityName || '').trim() || '北京';
+  document.getElementById('weatherDesc').textContent = `定位 ${city}...`;
+  try {
+    const geo = await httpGetJson(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=zh&format=json`
+    );
+    const loc = geo?.results?.[0];
+    if (!loc) throw new Error('未找到该城市');
+
+    const url =
+      `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}` +
+      `&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m` +
+      `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=4`;
+    const w = await httpGetJson(url);
+    const cur = w.current;
+    const daily = w.daily;
+    const [ico, txt] = wmoDesc(cur.weather_code);
+    const precip = daily?.precipitation_probability_max?.[0] ?? 0;
+
+    document.getElementById('weatherTemp').textContent = `${ico} ${Math.round(cur.temperature_2m)}°C`;
+    document.getElementById('weatherDesc').textContent = `${loc.name} · ${txt}`;
+    document.getElementById('weatherDetail').textContent =
+      `体感 ${Math.round(cur.apparent_temperature)}°C · 湿度 ${cur.relative_humidity_2m}% · 降水 ${precip}%`;
+
+    const fBox = document.getElementById('weatherForecast');
+    fBox.innerHTML = '';
+    for (let i = 1; i <= 3; i++) {
+      if (!daily?.time?.[i]) continue;
+      const [fi, ft] = wmoDesc(daily.weather_code[i]);
+      const dt = daily.time[i].slice(5);
+      fBox.innerHTML += `<div><div>${dt} ${fi} ${ft}</div><div>${Math.round(daily.temperature_2m_min[i])}°~${Math.round(daily.temperature_2m_max[i])}°</div></div>`;
+    }
+
+    currentWeatherInfo = {
+      temp: Math.round(cur.temperature_2m),
+      precip,
+      code: cur.weather_code
+    };
+    localStorage.setItem('weather_city_v1', loc.name);
+    updateSmartAdvice();
+  } catch (e) {
+    document.getElementById('weatherDesc').textContent = `${city} 天气暂不可用`;
+    updateSmartAdvice();
+  }
+}
+
+document.getElementById('changeCityBtn').addEventListener('click', () => {
+  const cur = localStorage.getItem('weather_city_v1') || '北京';
+  const val = prompt('输入城市名（如 上海、深圳、杭州、北京、Tokyo）：', cur);
+  if (val && val.trim()) fetchWeatherByCity(val.trim());
+});
+
+// ==================== 2. 闹钟与设备提醒引擎 ====================
 let ringInterval = null;
 let ringAudioCtx = null;
 
@@ -29,8 +201,10 @@ function startRingingOverlay(title, body) {
         gain.gain.setValueAtTime(0.001, t);
         gain.gain.exponentialRampToValueAtTime(0.6, t + 0.02);
         gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-        osc.connect(gain); gain.connect(ringAudioCtx.destination);
-        osc.start(t); osc.stop(t + 0.16);
+        osc.connect(gain);
+        gain.connect(ringAudioCtx.destination);
+        osc.start(t);
+        osc.stop(t + 0.16);
       });
       if (navigator.vibrate) navigator.vibrate([300, 150, 300, 150]);
     };
@@ -40,8 +214,14 @@ function startRingingOverlay(title, body) {
 }
 
 function stopRingingSoundOnly() {
-  if (ringInterval) { clearInterval(ringInterval); ringInterval = null; }
-  if (ringAudioCtx) { try { ringAudioCtx.close(); } catch {} ringAudioCtx = null; }
+  if (ringInterval) {
+    clearInterval(ringInterval);
+    ringInterval = null;
+  }
+  if (ringAudioCtx) {
+    try { ringAudioCtx.close(); } catch {}
+    ringAudioCtx = null;
+  }
   if (navigator.vibrate) navigator.vibrate(0);
 }
 
@@ -50,7 +230,9 @@ document.getElementById('stopRingBtn').addEventListener('click', () => {
   document.getElementById('ringingOverlay').classList.remove('active');
 });
 
-function makeSafeNotifId() { return Math.floor(Math.random() * 2000000000) + 1; }
+function makeSafeNotifId() {
+  return Math.floor(Math.random() * 2000000000) + 1;
+}
 
 async function initNotificationChannels() {
   if (!Capacitor.isNativePlatform()) return;
@@ -59,7 +241,7 @@ async function initNotificationChannels() {
     await LocalNotifications.createChannel({
       id: 'alarm_ring_v3',
       name: '课表与日程响铃闹钟',
-      description: '15秒真实连续响铃与震动',
+      description: '15秒连续响铃与震动',
       importance: 5,
       visibility: 1,
       vibration: true,
@@ -68,7 +250,7 @@ async function initNotificationChannels() {
     await LocalNotifications.createChannel({
       id: 'vibrate_channel_v3',
       name: '震动横幅提醒',
-      description: '强震动静音提醒',
+      description: '强震动提醒',
       importance: 4,
       vibration: true
     });
@@ -87,12 +269,12 @@ async function initNotificationChannels() {
         startRingingOverlay(act.notification.title, act.notification.body);
       }
     });
-  } catch (e) { console.error(e); }
+  } catch {}
 }
 
 async function syncToDeviceAlarm({ hour, minute, message, days }) {
   if (!Capacitor.isNativePlatform()) {
-    alert(`已模拟同步系统闹钟：${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} ${message}`);
+    alert(`系统闹钟：${hour}:${minute} ${message}`);
     return;
   }
   try {
@@ -110,7 +292,7 @@ async function syncToDeviceAlarm({ hour, minute, message, days }) {
 
 async function syncToDeviceCalendar({ title, location, description, startTimeMs, endTimeMs, rrule }) {
   if (!Capacitor.isNativePlatform()) {
-    alert(`已模拟同步系统日历：${title} (${new Date(startTimeMs).toLocaleString()})`);
+    alert(`系统日历：${title}`);
     return;
   }
   try {
@@ -129,7 +311,10 @@ async function syncToDeviceCalendar({ title, location, description, startTimeMs,
 
 async function scheduleAppReminder({ id, title, body, atDate, weeklyWeekday, hour, minute, mode }) {
   const isAlarm = mode === 'alarm' || mode === 'sys_alarm';
-  const channelId = isAlarm ? 'alarm_ring_v3' : (mode === 'vibrate' ? 'vibrate_channel_v3' : 'normal_channel_v3');
+  const channelId = isAlarm
+    ? 'alarm_ring_v3'
+    : (mode === 'vibrate' ? 'vibrate_channel_v3' : 'normal_channel_v3');
+
   if (Capacitor.isNativePlatform()) {
     try {
       const perm = await LocalNotifications.requestPermissions();
@@ -158,13 +343,15 @@ async function scheduleAppReminder({ id, title, body, atDate, weeklyWeekday, hou
 
 async function cancelReminder(id) {
   if (!id || !Capacitor.isNativePlatform()) return;
-  try { await LocalNotifications.cancel({ notifications: [{ id }] }); } catch {}
+  try {
+    await LocalNotifications.cancel({ notifications: [{ id }] });
+  } catch {}
 }
 
 document.getElementById('testAlarmBtn').addEventListener('click', () => {
   const box = document.createElement('div');
   box.innerHTML = `
-    <p class="sub-text" style="margin-bottom:10px;">支持多种提醒方式，其中【系统闹钟】和【系统日历】直接写入手机底层，关掉 App 甚至重启手机依然 100% 准时响铃！</p>
+    <p class="sub-text" style="margin-bottom:10px;">【系统闹钟】和【系统日历】直接写入手机底层，关掉 App 甚至重启手机依然准时响铃！</p>
     <button class="btn" id="t5s" style="width:100%; margin-bottom:8px;">🔔 测试 App 5秒后连续响铃</button>
     <button class="btn btn-warn" id="tSys" style="width:100%; margin-bottom:8px;">📱 同步到手机【系统时钟闹钟】(1分钟后)</button>
     <button class="btn btn-green" id="tCal" style="width:100%;">📅 同步到手机【系统日历日程】(10分钟后)</button>
@@ -172,29 +359,47 @@ document.getElementById('testAlarmBtn').addEventListener('click', () => {
   box.querySelector('#t5s').onclick = async () => {
     modal.classList.remove('open');
     await scheduleAppReminder({
-      id: makeSafeNotifId(), title: '响铃闹钟测试', body: '15秒闹铃正常工作！',
-      atDate: new Date(Date.now() + 5000), mode: 'alarm'
+      id: makeSafeNotifId(),
+      title: '响铃闹钟测试',
+      body: '15秒连续闹铃正常工作！',
+      atDate: new Date(Date.now() + 5000),
+      mode: 'alarm'
     });
-    setTimeout(() => { if (document.visibilityState === 'visible') startRingingOverlay('响铃闹钟测试', '铃声正常响起！'); }, 5200);
+    setTimeout(() => {
+      if (document.visibilityState === 'visible') {
+        startRingingOverlay('响铃闹钟测试', '铃声正常响起！');
+      }
+    }, 5200);
     alert('5 秒后开始响铃！');
   };
   box.querySelector('#tSys').onclick = async () => {
     modal.classList.remove('open');
     const d = new Date(Date.now() + 65000);
-    await syncToDeviceAlarm({ hour: d.getHours(), minute: d.getMinutes(), message: '学财助手系统闹钟测试' });
+    await syncToDeviceAlarm({
+      hour: d.getHours(),
+      minute: d.getMinutes(),
+      message: '学财助手系统闹钟测试'
+    });
   };
   box.querySelector('#tCal').onclick = async () => {
     modal.classList.remove('open');
-    const start = Date.now() + 600000;
-    await syncToDeviceCalendar({ title: '学财助手日程提醒测试', location: '自习室', description: '关掉App后也会由手机系统日历准时提醒', startTimeMs: start, endTimeMs: start + 1800000 });
+    const s = Date.now() + 600000;
+    await syncToDeviceCalendar({
+      title: '学财助手日程提醒测试',
+      location: '自习室',
+      description: '关App依然有效',
+      startTimeMs: s,
+      endTimeMs: s + 1800000
+    });
   };
   openModal('⏰ 多样提醒与设备同步测试', box);
 });
 
-// ==================== 2. 导航与通用弹窗 ====================
+// ==================== 3. 导航与弹窗 ====================
 const modal = document.getElementById('modal');
 const modalTitle = document.getElementById('modalTitle');
 const modalContent = document.getElementById('modalContent');
+
 function openModal(title, htmlOrNode) {
   modalTitle.textContent = title;
   modalContent.innerHTML = '';
@@ -202,8 +407,11 @@ function openModal(title, htmlOrNode) {
   else modalContent.appendChild(htmlOrNode);
   modal.classList.add('open');
 }
+
 document.getElementById('closeModalBtn').addEventListener('click', () => modal.classList.remove('open'));
-modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
+modal.addEventListener('click', (e) => {
+  if (e.target === modal) modal.classList.remove('open');
+});
 
 document.querySelectorAll('nav button').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -215,10 +423,12 @@ document.querySelectorAll('nav button').forEach(btn => {
   });
 });
 
-// ==================== 3. 图片 OCR & 文档智能解析课表/日程引擎 ====================
+// ==================== 4. OCR & 文档智能解析课表/日程 ====================
 const PERIOD_MAP = {
-  1: ['08:00', '08:45'], 2: ['08:55', '09:40'], 3: ['10:00', '10:45'], 4: ['10:55', '11:40'],
-  5: ['14:00', '14:45'], 6: ['14:55', '15:40'], 7: ['16:00', '16:45'], 8: ['16:55', '17:40'],
+  1: ['08:00', '08:45'], 2: ['08:55', '09:40'],
+  3: ['10:00', '10:45'], 4: ['10:55', '11:40'],
+  5: ['14:00', '14:45'], 6: ['14:55', '15:40'],
+  7: ['16:00', '16:45'], 8: ['16:55', '17:40'],
   9: ['19:00', '19:45'], 10: ['19:55', '20:40']
 };
 
@@ -227,17 +437,19 @@ function parseSmartText(rawText) {
   const parsedCourses = [];
   const parsedEvents = [];
   const dayRegex = /(?:星期|周)([一二三四五六日天1-7])/;
-  const dayCharMap = { '一': 1, '1': 1, '二': 2, '2': 2, '三': 3, '3': 3, '四': 4, '4': 4, '五': 5, '5': 5, '六': 6, '6': 6, '日': 0, '天': 0, '7': 0 };
+  const dayMap = {
+    '一': 1, '1': 1, '二': 2, '2': 2, '三': 3, '3': 3,
+    '四': 4, '4': 4, '五': 5, '5': 5, '六': 6, '6': 6,
+    '日': 0, '天': 0, '7': 0
+  };
   const timeRangeRegex = /(\d{1,2})[:：](\d{2})\s*[-~至到]\s*(\d{1,2})[:：](\d{2})/;
   const singleTimeRegex = /(\d{1,2})[:：](\d{2})/;
   const periodRegex = /第?\s*(\d{1,2})\s*[-~至到]?\s*(\d{1,2})?\s*节/;
   const dateRegex = /(?:(\d{4})[-/.年])?\s*(\d{1,2})[-/.月](\d{1,2})日?/;
   const roomRegex = /([教实图综A-Za-z楼栋室]*\s*[A-Za-z]?-?\d{3,4}[室]?)/;
-
   const yearNow = new Date().getFullYear();
 
   lines.forEach(line => {
-    // 1. 先检查是否含具体日期 -> 识别为考试/日程/闹钟
     const dm = line.match(dateRegex);
     if (dm && !line.includes('周')) {
       const y = dm[1] ? Number(dm[1]) : yearNow;
@@ -247,9 +459,13 @@ function parseSmartText(rawText) {
       const hh = tm ? String(Number(tm[1])).padStart(2, '0') : '09';
       const mm = tm ? tm[2] : '00';
       const rm = line.match(roomRegex);
-      let title = line.replace(dateRegex, '').replace(timeRangeRegex, '').replace(singleTimeRegex, '').replace(/[,，|]/g, ' ').trim();
-      if (!title) title = '识别日程';
-      const type = /考|测验|答辩/.test(line) ? '考试' : (/闹钟|起床|吃药/.test(line) ? '闹钟' : '日程');
+      const title = line
+        .replace(dateRegex, '')
+        .replace(timeRangeRegex, '')
+        .replace(singleTimeRegex, '')
+        .replace(/[,，|]/g, ' ')
+        .trim() || '识别日程';
+      const type = /考|测验|答辩/.test(line) ? '考试' : (/闹钟|起床/.test(line) ? '闹钟' : '日程');
       parsedEvents.push({
         type,
         name: title.slice(0, 28),
@@ -260,60 +476,56 @@ function parseSmartText(rawText) {
       return;
     }
 
-    // 2. 检查是否含星期几或节次/时间段 -> 识别为课程
     const dw = line.match(dayRegex);
     const tr = line.match(timeRangeRegex);
     const pr = line.match(periodRegex);
     if (dw || tr || pr) {
-      const day = dw ? (dayCharMap[dw[1]] ?? 1) : 1;
-      let start = '08:00', end = '09:40';
+      const day = dw ? (dayMap[dw[1]] ?? 1) : 1;
+      let start = '08:00';
+      let end = '09:40';
       if (tr) {
         start = `${String(Number(tr[1])).padStart(2, '0')}:${tr[2]}`;
         end = `${String(Number(tr[3])).padStart(2, '0')}:${tr[4]}`;
       } else if (pr) {
-        const p1 = Number(pr[1]), p2 = Number(pr[2] || pr[1]);
-        start = (PERIOD_MAP[p1] && PERIOD_MAP[p1][0]) || '08:00';
-        end = (PERIOD_MAP[p2] && PERIOD_MAP[p2][1]) || '09:40';
-      } else {
-        const st = line.match(singleTimeRegex);
-        if (st) {
-          const h = Number(st[1]);
-          start = `${String(h).padStart(2, '0')}:${st[2]}`;
-          end = `${String((h + 1) % 24).padStart(2, '0')}:${st[2]}`;
-        }
+        const p1 = Number(pr[1]);
+        const p2 = Number(pr[2] || pr[1]);
+        start = PERIOD_MAP[p1]?.[0] || '08:00';
+        end = PERIOD_MAP[p2]?.[1] || '09:40';
       }
       const rm = line.match(roomRegex);
-      let cname = line
-        .replace(dayRegex, '').replace(timeRangeRegex, '').replace(periodRegex, '')
-        .replace(singleTimeRegex, '').replace(roomRegex, '').replace(/[,，|]/g, ' ').trim();
+      const cname = line
+        .replace(dayRegex, '')
+        .replace(timeRangeRegex, '')
+        .replace(periodRegex, '')
+        .replace(singleTimeRegex, '')
+        .replace(roomRegex, '')
+        .replace(/[,，|]/g, ' ')
+        .trim();
       if (cname.length >= 1) {
         parsedCourses.push({
           name: cname.slice(0, 22),
-          day, start, end,
+          day,
+          start,
+          end,
           room: rm ? rm[1] : ''
         });
       }
     }
   });
-
   return { parsedCourses, parsedEvents };
 }
 
 async function runSmartRecognizeFromLocalFile(fileRecord) {
-  openModal('🧠 智能识别中...', '<div style="text-align:center; padding:24px;">正在通过离线 OCR / 文档引擎提取文字并解析课表与日程，请稍候...</div>');
+  openModal('🧠 智能识别中...', '<div style="text-align:center; padding:24px;">正在离线提取文字并解析...</div>');
   try {
-    let extractedText = '';
-    if (fileRecord.textContent) {
-      extractedText = fileRecord.textContent;
-    } else if (Capacitor.isNativePlatform() && fileRecord.localPath) {
+    let text = fileRecord.textContent || '';
+    if (!text && Capacitor.isNativePlatform() && fileRecord.localPath) {
       const res = await NativeTools.extractText({ localPath: fileRecord.localPath });
-      extractedText = res.text || '';
-    } else if (fileRecord.blob) {
-      extractedText = await fileRecord.blob.text();
+      text = res.text || '';
     }
-    showSmartImportReviewModal(extractedText);
+    showSmartImportReviewModal(text);
   } catch (e) {
-    openModal('识别提示', `<p class="sub-text" style="color:#dc2626;">识别遇到问题：${e.message}</p><p class="sub-text">提示：支持 JPG/PNG 图片、Word(.docx)、Excel(.xlsx)、PPT(.pptx)、TXT/CSV 文档。</p>`);
+    openModal('识别提示', `<p class="sub-text" style="color:#dc2626;">识别失败：${e.message}</p>`);
   }
 }
 
@@ -321,67 +533,68 @@ function showSmartImportReviewModal(rawText) {
   const { parsedCourses, parsedEvents } = parseSmartText(rawText);
   const box = document.createElement('div');
   box.innerHTML = `
-    <div style="font-size:12px; font-weight:600; margin-bottom:4px;">📄 提取到的原文（可手动微调后重新解析）：</div>
+    <div style="font-size:12px; font-weight:600; margin-bottom:4px;">📄 提取到的原文（可手动微调）：</div>
     <textarea id="ocrRawEdit" style="min-height:95px; font-size:12px;">${(rawText || '').replace(/</g, '&lt;')}</textarea>
-    <button class="btn btn-sm btn-outline" id="reparseBtn" style="margin:6px 0 10px;">🔄 重新智能解析</button>
+    <button class="btn btn-sm btn-outline" id="reparseBtn" style="margin:6px 0 10px;">🔄 重新解析</button>
     <div id="parsedPreviewArea"></div>
   `;
 
   const renderPreview = (cList, eList) => {
     const area = box.querySelector('#parsedPreviewArea');
     if (!cList.length && !eList.length) {
-      area.innerHTML = `<div class="sub-text" style="color:#b45309; padding:8px; background:#fef3c7; border-radius:8px;">
-        暂未匹配到标准格式。你可以在上方文本框整理成每行一条，例如：<br/>
-        <code>高等数学 周一 08:00-09:40 教A201</code><br/>
-        <code>线性代数考试 2026-12-20 09:00 教B305</code><br/>
-        再点“重新智能解析”！
-      </div>`;
+      area.innerHTML = `
+        <div class="sub-text" style="color:#b45309; padding:8px; background:#fef3c7; border-radius:8px;">
+          暂未匹配到标准格式。示例：<br/>
+          <code>高等数学 周一 08:00-09:40 教A201</code><br/>
+          <code>英语考试 2026-12-20 09:00 教B305</code>
+        </div>
+      `;
       return;
     }
-
     let html = '';
     if (cList.length) {
-      html += `<div style="font-weight:600; font-size:13px; margin:6px 0;">📅 识别到 ${cList.length} 节课程：</div>`;
-      cList.forEach((c, idx) => {
-        html += `<label style="display:flex; gap:6px; align-items:center; padding:5px 0; font-size:12px; border-bottom:1px solid #eee;">
-          <input type="checkbox" class="chk-course" data-idx="${idx}" checked style="width:auto;" />
-          <span><strong>${c.name}</strong> · ${DAYS_LABEL[c.day]} ${c.start}-${c.end} ${c.room}</span>
-        </label>`;
+      html += `<div style="font-weight:600; font-size:13px; margin:6px 0;">📅 识别到 ${cList.length} 节课：</div>`;
+      cList.forEach((c, i) => {
+        html += `
+          <label style="display:flex; gap:6px; align-items:center; padding:5px 0; font-size:12px; border-bottom:1px solid #eee;">
+            <input type="checkbox" class="chk-course" data-idx="${i}" checked style="width:auto;" />
+            <span><strong>${c.name}</strong> · ${DAYS_LABEL[c.day]} ${c.start}-${c.end} ${c.room}</span>
+          </label>`;
       });
     }
     if (eList.length) {
-      html += `<div style="font-weight:600; font-size:13px; margin:10px 0 6px;">📝 识别到 ${eList.length} 条考试/日程：</div>`;
-      eList.forEach((ev, idx) => {
-        html += `<label style="display:flex; gap:6px; align-items:center; padding:5px 0; font-size:12px; border-bottom:1px solid #eee;">
-          <input type="checkbox" class="chk-event" data-idx="${idx}" checked style="width:auto;" />
-          <span><span class="badge">${ev.type}</span><strong>${ev.name}</strong> · ${ev.datetime.replace('T', ' ')} ${ev.room}</span>
-        </label>`;
+      html += `<div style="font-weight:600; font-size:13px; margin:10px 0 6px;">📝 识别到 ${eList.length} 条日程：</div>`;
+      eList.forEach((ev, i) => {
+        html += `
+          <label style="display:flex; gap:6px; align-items:center; padding:5px 0; font-size:12px; border-bottom:1px solid #eee;">
+            <input type="checkbox" class="chk-event" data-idx="${i}" checked style="width:auto;" />
+            <span><span class="badge">${ev.type}</span><strong>${ev.name}</strong> · ${ev.datetime.replace('T', ' ')}</span>
+          </label>`;
       });
     }
-    html += `<button class="btn" id="doSmartImportBtn" style="width:100%; margin-top:12px;">✅ 一键导入并设置闹钟</button>`;
+    html += `<button class="btn" id="doSmartImportBtn" style="width:100%; margin-top:12px;">✅ 一键导入并设提醒</button>`;
     area.innerHTML = html;
 
     area.querySelector('#doSmartImportBtn').onclick = async () => {
-      let cCount = 0, eCount = 0;
+      let cc = 0;
+      let ec = 0;
       for (const chk of area.querySelectorAll('.chk-course:checked')) {
-        const c = cList[Number(chk.dataset.idx)];
-        await addCourseItem({ ...c, advance: 15, mode: 'alarm' });
-        cCount++;
+        await addCourseItem({ ...cList[Number(chk.dataset.idx)], advance: 15, mode: 'alarm' });
+        cc++;
       }
       for (const chk of area.querySelectorAll('.chk-event:checked')) {
-        const ev = eList[Number(chk.dataset.idx)];
-        await addExamOrScheduleItem({ ...ev, advance: 30, mode: 'alarm' });
-        eCount++;
+        await addExamOrScheduleItem({ ...eList[Number(chk.dataset.idx)], advance: 30, mode: 'alarm' });
+        ec++;
       }
       modal.classList.remove('open');
-      alert(`智能导入完成！已导入 ${cCount} 节课、${eCount} 条日程，并已开启响铃提醒（可在列表中一键同步到系统闹钟或日历）。`);
+      alert(`导入完成：${cc} 节课、${ec} 条日程！`);
     };
   };
 
   renderPreview(parsedCourses, parsedEvents);
   box.querySelector('#reparseBtn').onclick = () => {
-    const res = parseSmartText(box.querySelector('#ocrRawEdit').value);
-    renderPreview(res.parsedCourses, res.parsedEvents);
+    const r = parseSmartText(box.querySelector('#ocrRawEdit').value);
+    renderPreview(r.parsedCourses, r.parsedEvents);
   };
   openModal('🧠 智能识别结果确认', box);
 }
@@ -390,45 +603,56 @@ async function pickAndSmartRecognize() {
   try {
     if (Capacitor.isNativePlatform()) {
       const res = await NativeTools.pickFiles({ accept: '*/*', multiple: false });
-      const file = (res.files || [])[0];
-      if (!file) return;
-      await runSmartRecognizeFromLocalFile(file);
+      if (res.files?.[0]) await runSmartRecognizeFromLocalFile(res.files[0]);
     } else {
-      const text = prompt('浏览器预览模式：请直接粘贴课表/日程文字进行智能解析：', '高等数学 周一 08:00-09:40 A201\n英语期末考试 2026-12-25 14:00 B102');
-      if (text) showSmartImportReviewModal(text);
+      const t = prompt('粘贴文字测试解析：', '高等数学 周一 08:00-09:40 A201');
+      if (t) showSmartImportReviewModal(t);
     }
   } catch (e) {
-    if (!String(e.message).includes('取消')) alert('选择文件失败：' + e.message);
+    if (!String(e.message).includes('取消')) alert('选择失败：' + e.message);
   }
 }
 
 document.getElementById('smartImportCourseBtn').addEventListener('click', pickAndSmartRecognize);
 document.getElementById('smartImportExamBtn').addEventListener('click', pickAndSmartRecognize);
 
-// ==================== 4. 课表管理 ====================
+// ==================== 5. 课表与考试日程 ====================
 let courses = JSON.parse(localStorage.getItem('courses_v1') || '[]');
 let selectedDay = new Date().getDay();
+let exams = JSON.parse(localStorage.getItem('exams_v1') || '[]');
 
 function calcCourseAlarmTime(item) {
   const [h, m] = (item.start || '08:00').split(':').map(Number);
   let totalMin = h * 60 + m - Number(item.advance || 15);
   let dayIndex = Number(item.day);
-  if (totalMin < 0) { totalMin += 1440; dayIndex = (dayIndex + 6) % 7; }
-  return { hour: Math.floor(totalMin / 60), minute: totalMin % 60, capWeekday: dayIndex + 1, jsDay: dayIndex };
+  if (totalMin < 0) {
+    totalMin += 1440;
+    dayIndex = (dayIndex + 6) % 7;
+  }
+  return { hour: Math.floor(totalMin / 60), minute: totalMin % 60, capWeekday: dayIndex + 1 };
 }
 
 function getNextWeekdayDate(jsDay, timeStr) {
   const [h, m] = (timeStr || '08:00').split(':').map(Number);
   const now = new Date();
   const d = new Date(now);
-  const diff = (jsDay - now.getDay() + 7) % 7;
-  d.setDate(now.getDate() + diff);
+  d.setDate(now.getDate() + ((jsDay - now.getDay() + 7) % 7));
   d.setHours(h, m, 0, 0);
   if (d.getTime() < now.getTime()) d.setDate(d.getDate() + 7);
   return d;
 }
 
-function saveCourses() { localStorage.setItem('courses_v1', JSON.stringify(courses)); renderCourses(); }
+function saveCourses() {
+  localStorage.setItem('courses_v1', JSON.stringify(courses));
+  renderCourses();
+  updateSmartAdvice();
+}
+
+function saveExams() {
+  localStorage.setItem('exams_v1', JSON.stringify(exams));
+  renderExams();
+  updateSmartAdvice();
+}
 
 function renderDayTabs() {
   const wrap = document.getElementById('dayTabs');
@@ -437,16 +661,23 @@ function renderDayTabs() {
     const b = document.createElement('button');
     b.className = 'day-pill' + (d === selectedDay ? ' active' : '');
     b.textContent = DAYS_LABEL[d];
-    b.onclick = () => { selectedDay = d; renderDayTabs(); renderCourses(); };
+    b.onclick = () => {
+      selectedDay = d;
+      renderDayTabs();
+      renderCourses();
+    };
     wrap.appendChild(b);
   });
 }
 
 function renderCourses() {
   const list = document.getElementById('courseList');
-  const filtered = courses.filter(c => Number(c.day) === Number(selectedDay)).sort((a, b) => a.start.localeCompare(b.start));
+  const filtered = courses
+    .filter(c => Number(c.day) === Number(selectedDay))
+    .sort((a, b) => a.start.localeCompare(b.start));
+
   if (!filtered.length) {
-    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:16px;">今天暂无排课，可点击上方“📷 图/文档识课表”智能导入 ✨</div>';
+    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:16px;">今天暂无排课 ✨</div>';
     return;
   }
   list.innerHTML = '';
@@ -466,16 +697,20 @@ function renderCourses() {
       </div>
     `;
     div.querySelector('.sys-alarm-btn').onclick = () => syncToDeviceAlarm({
-      hour: t.hour, minute: t.minute, message: `上课：${c.name} (${c.room || ''})`, days: [t.capWeekday]
+      hour: t.hour,
+      minute: t.minute,
+      message: `上课：${c.name} (${c.room || ''})`,
+      days: [t.capWeekday]
     });
     div.querySelector('.sys-cal-btn').onclick = () => {
-      const startD = getNextWeekdayDate(Number(c.day), c.start);
-      const endD = getNextWeekdayDate(Number(c.day), c.end);
+      const sD = getNextWeekdayDate(Number(c.day), c.start);
+      const eD = getNextWeekdayDate(Number(c.day), c.end);
       syncToDeviceCalendar({
-        title: `上课：${c.name}`, location: c.room || '',
-        description: `每周${DAYS_LABEL[c.day]} ${c.start}-${c.end}`,
-        startTimeMs: startD.getTime(),
-        endTimeMs: Math.max(endD.getTime(), startD.getTime() + 3600000),
+        title: `上课：${c.name}`,
+        location: c.room || '',
+        description: `每周${DAYS_LABEL[c.day]}`,
+        startTimeMs: sD.getTime(),
+        endTimeMs: Math.max(eD.getTime(), sD.getTime() + 3600000),
         rrule: `FREQ=WEEKLY;BYDAY=${RRULE_DAYS[Number(c.day)]}`
       });
     };
@@ -492,9 +727,13 @@ async function addCourseItem(item) {
   const t = calcCourseAlarmTime(item);
   const notifId = makeSafeNotifId();
   await scheduleAppReminder({
-    id: notifId, title: `即将上课：${item.name}`,
-    body: `时间 ${item.start}-${item.end}，地点：${item.room || '请查看课表'}`,
-    weeklyWeekday: t.capWeekday, hour: t.hour, minute: t.minute, mode: item.mode || 'alarm'
+    id: notifId,
+    title: `即将上课：${item.name}`,
+    body: `${item.start}-${item.end} ${item.room || ''}`,
+    weeklyWeekday: t.capWeekday,
+    hour: t.hour,
+    minute: t.minute,
+    mode: item.mode || 'alarm'
   });
   courses.push({ ...item, id: Date.now() + Math.random(), notifId });
   saveCourses();
@@ -505,22 +744,28 @@ document.getElementById('addCourseBtn').addEventListener('click', async () => {
   const name = document.getElementById('cName').value.trim();
   if (!name) return alert('请输入课程名称');
   const item = {
-    name, day: Number(document.getElementById('cDay').value),
+    name,
+    day: Number(document.getElementById('cDay').value),
     room: document.getElementById('cRoom').value.trim(),
-    start: document.getElementById('cStart').value, end: document.getElementById('cEnd').value,
-    advance: Number(document.getElementById('cAdvance').value), mode: document.getElementById('cMode').value
+    start: document.getElementById('cStart').value,
+    end: document.getElementById('cEnd').value,
+    advance: Number(document.getElementById('cAdvance').value),
+    mode: document.getElementById('cMode').value
   };
   const t = await addCourseItem(item);
   document.getElementById('cName').value = '';
   document.getElementById('cRoom').value = '';
   if (item.mode === 'sys_alarm') {
-    await syncToDeviceAlarm({ hour: t.hour, minute: t.minute, message: `上课：${item.name} (${item.room})`, days: [t.capWeekday] });
+    await syncToDeviceAlarm({ hour: t.hour, minute: t.minute, message: `上课：${item.name}`, days: [t.capWeekday] });
   } else if (item.mode === 'sys_cal') {
-    const startD = getNextWeekdayDate(item.day, item.start);
-    const endD = getNextWeekdayDate(item.day, item.end);
+    const sD = getNextWeekdayDate(item.day, item.start);
+    const eD = getNextWeekdayDate(item.day, item.end);
     await syncToDeviceCalendar({
-      title: `上课：${item.name}`, location: item.room, description: `每周${DAYS_LABEL[item.day]}`,
-      startTimeMs: startD.getTime(), endTimeMs: Math.max(endD.getTime(), startD.getTime() + 3600000),
+      title: `上课：${item.name}`,
+      location: item.room,
+      description: `每周${DAYS_LABEL[item.day]}`,
+      startTimeMs: sD.getTime(),
+      endTimeMs: Math.max(eD.getTime(), sD.getTime() + 3600000),
       rrule: `FREQ=WEEKLY;BYDAY=${RRULE_DAYS[item.day]}`
     });
   } else {
@@ -532,18 +777,16 @@ document.getElementById('openBatchCourseBtn').addEventListener('click', () => {
   showSmartImportReviewModal('高等数学 周一 08:00-09:40 教A101\n大学英语 周三 10:00-11:40 教B205');
 });
 
-// ==================== 5. 考试 / 日程 / 闹钟管理 ====================
-let exams = JSON.parse(localStorage.getItem('exams_v1') || '[]');
-function saveExams() { localStorage.setItem('exams_v1', JSON.stringify(exams)); renderExams(); }
-
 async function addExamOrScheduleItem(item) {
   const targetMs = new Date(item.datetime).getTime() - Number(item.advance || 0) * 60000;
   const notifId = makeSafeNotifId();
   if (targetMs > Date.now()) {
     await scheduleAppReminder({
-      id: notifId, title: `${item.type || '日程'}提醒：${item.name}`,
-      body: `时间 ${item.datetime.replace('T', ' ')}，地点：${item.room || '无'} ${item.note || ''}`,
-      atDate: new Date(targetMs), mode: item.mode || 'alarm'
+      id: notifId,
+      title: `${item.type || '日程'}：${item.name}`,
+      body: `${item.datetime.replace('T', ' ')} ${item.room || ''}`,
+      atDate: new Date(targetMs),
+      mode: item.mode || 'alarm'
     });
   }
   exams.push({ ...item, type: item.type || '考试', id: Date.now() + Math.random(), notifId });
@@ -555,27 +798,28 @@ function renderExams() {
   const list = document.getElementById('examList');
   const sorted = [...exams].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
   if (!sorted.length) {
-    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:16px;">暂无考试/日程，支持图片文档识别一键导入 🎯</div>';
+    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:16px;">暂无日程 🎯</div>';
     return;
   }
   list.innerHTML = '';
   const now = Date.now();
   sorted.forEach(ex => {
     const diffMs = new Date(ex.datetime).getTime() - now;
-    let countdown = '已过时', urgentClass = '';
+    let cd = '已过时';
+    let uc = '';
     if (diffMs > 0) {
-      const days = Math.floor(diffMs / 86400000);
-      const hrs = Math.floor((diffMs % 86400000) / 3600000);
-      const mins = Math.floor((diffMs % 3600000) / 60000);
-      countdown = days > 0 ? `剩 ${days}天${hrs}小时` : (hrs > 0 ? `剩 ${hrs}小时${mins}分` : `剩 ${mins}分钟`);
-      if (days <= 3) urgentClass = 'badge-urgent';
+      const d = Math.floor(diffMs / 86400000);
+      const h = Math.floor((diffMs % 86400000) / 3600000);
+      const m = Math.floor((diffMs % 3600000) / 60000);
+      cd = d > 0 ? `剩 ${d}天${h}时` : (h > 0 ? `剩 ${h}时${m}分` : `剩 ${m}分钟`);
+      if (d <= 3) uc = 'badge-urgent';
     }
     const div = document.createElement('div');
     div.className = 'item-row';
     div.innerHTML = `
       <div style="flex:1;">
-        <div><span class="badge">${ex.type || '考试'}</span><strong>${ex.name}</strong> <span class="badge ${urgentClass}">${countdown}</span></div>
-        <div class="sub-text">📅 ${ex.datetime.replace('T', ' ')} ｜ 📍 ${ex.room || '未填地点'}</div>
+        <div><span class="badge">${ex.type || '考试'}</span><strong>${ex.name}</strong> <span class="badge ${uc}">${cd}</span></div>
+        <div class="sub-text">📅 ${ex.datetime.replace('T', ' ')} ｜ 📍 ${ex.room || '无'}</div>
         ${ex.note ? `<div class="sub-text">📌 ${ex.note}</div>` : ''}
       </div>
       <div style="display:flex; flex-direction:column; gap:4px;">
@@ -586,11 +830,17 @@ function renderExams() {
     `;
     div.querySelector('.sys-alarm-btn').onclick = () => {
       const t = new Date(new Date(ex.datetime).getTime() - Number(ex.advance || 0) * 60000);
-      syncToDeviceAlarm({ hour: t.getHours(), minute: t.getMinutes(), message: `${ex.type || '日程'}：${ex.name}` });
+      syncToDeviceAlarm({ hour: t.getHours(), minute: t.getMinutes(), message: `${ex.type}：${ex.name}` });
     };
     div.querySelector('.sys-cal-btn').onclick = () => {
       const st = new Date(ex.datetime).getTime();
-      syncToDeviceCalendar({ title: `[${ex.type || '考试'}] ${ex.name}`, location: ex.room || '', description: ex.note || '', startTimeMs: st, endTimeMs: st + 7200000 });
+      syncToDeviceCalendar({
+        title: `[${ex.type}] ${ex.name}`,
+        location: ex.room || '',
+        description: ex.note || '',
+        startTimeMs: st,
+        endTimeMs: st + 7200000
+      });
     };
     div.querySelector('.del-btn').onclick = async () => {
       await cancelReminder(ex.notifId);
@@ -607,7 +857,8 @@ document.getElementById('addExamBtn').addEventListener('click', async () => {
   if (!name || !datetime) return alert('请填写标题和日期时间');
   const item = {
     type: document.getElementById('eType').value,
-    name, datetime,
+    name,
+    datetime,
     room: document.getElementById('eRoom').value.trim(),
     note: document.getElementById('eNote').value.trim(),
     advance: Number(document.getElementById('eAdvance').value),
@@ -622,22 +873,31 @@ document.getElementById('addExamBtn').addEventListener('click', async () => {
     await syncToDeviceAlarm({ hour: t.getHours(), minute: t.getMinutes(), message: `${item.type}：${item.name}` });
   } else if (item.mode === 'sys_cal') {
     const st = new Date(datetime).getTime();
-    await syncToDeviceCalendar({ title: `[${item.type}] ${item.name}`, location: item.room, description: item.note, startTimeMs: st, endTimeMs: st + 7200000 });
+    await syncToDeviceCalendar({
+      title: `[${item.type}] ${item.name}`,
+      location: item.room,
+      description: item.note,
+      startTimeMs: st,
+      endTimeMs: st + 7200000
+    });
   } else {
     alert('日程与提醒已保存！');
   }
 });
 
-// ==================== 6. 原生文件资料库（带 OCR / 文档识别入口） ====================
+// ==================== 6. 原生资料库 ====================
 let localFiles = JSON.parse(localStorage.getItem('files_meta_v3') || '[]');
-function saveFilesMeta() { localStorage.setItem('files_meta_v3', JSON.stringify(localFiles)); renderFiles(); }
+function saveFilesMeta() {
+  localStorage.setItem('files_meta_v3', JSON.stringify(localFiles));
+  renderFiles();
+}
 
 function renderFiles() {
   const filter = document.getElementById('fileFilter').value;
   const items = localFiles.filter(f => filter === 'all' || f.category === filter);
   const list = document.getElementById('fileList');
   if (!items.length) {
-    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:16px;">暂无资料，点击上方原生导入图片、Word/Excel/PDF 或新建笔记 📂</div>';
+    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:16px;">暂无资料 📂</div>';
     return;
   }
   list.innerHTML = '';
@@ -661,14 +921,14 @@ function renderFiles() {
         <button class="btn btn-sm btn-danger del-btn">删除</button>
       </div>
     `;
-    div.querySelector('.open-trigger').onclick = async () => {
+    div.querySelector('.open-trigger').onclick = () => {
       if (f.category === 'image') {
         openModal(f.name, `<img src="${srcUrl}" style="width:100%; border-radius:8px; margin-bottom:10px;" /><button class="btn btn-green" style="width:100%;" id="mOcr">🧠 OCR 识别图中课表/日程</button>`);
         document.getElementById('mOcr').onclick = () => runSmartRecognizeFromLocalFile(f);
       } else if (f.textContent !== undefined) {
         openModal(f.name, `<pre style="white-space:pre-wrap; font-size:13px;">${f.textContent.replace(/</g, '&lt;')}</pre>`);
       } else {
-        openModal(f.name, `<p class="sub-text">格式：${f.format} ｜ 大小：${(f.size / 1024).toFixed(1)} KB</p><button class="btn btn-green" style="width:100%;" id="mDocOcr">🧠 提取文档文字并智能解析课表/日程</button>`);
+        openModal(f.name, `<p class="sub-text">格式：${f.format} ｜ ${(f.size / 1024).toFixed(1)} KB</p><button class="btn btn-green" style="width:100%;" id="mDocOcr">🧠 提取文字并解析</button>`);
         document.getElementById('mDocOcr').onclick = () => runSmartRecognizeFromLocalFile(f);
       }
     };
@@ -709,10 +969,14 @@ document.getElementById('fallbackFileInput').addEventListener('change', async (e
     const isImg = file.type.startsWith('image/');
     const isTxt = file.type.startsWith('text/') || /^(TXT|MD|CSV)$/.test(ext);
     localFiles.unshift({
-      id: Date.now() + Math.random(), name: file.name, format: ext, size: file.size,
+      id: Date.now() + Math.random(),
+      name: file.name,
+      format: ext,
+      size: file.size,
       category: isImg ? 'image' : (isTxt ? 'text' : 'doc'),
       textContent: isTxt ? await file.text() : undefined,
-      dataUrl: isImg ? URL.createObjectURL(file) : undefined, createdAt: Date.now()
+      dataUrl: isImg ? URL.createObjectURL(file) : undefined,
+      createdAt: Date.now()
     });
   }
   e.target.value = '';
@@ -723,15 +987,20 @@ document.getElementById('openNoteModalBtn').addEventListener('click', () => {
   const box = document.createElement('div');
   box.innerHTML = `
     <input id="noteTitle" placeholder="笔记标题" style="margin-bottom:8px;" />
-    <textarea id="noteBody" style="min-height:150px;" placeholder="输入或粘贴文字..."></textarea>
+    <textarea id="noteBody" style="min-height:150px;" placeholder="输入文字..."></textarea>
     <button class="btn" style="width:100%; margin-top:10px;" id="saveNoteBtn">保存</button>
   `;
   box.querySelector('#saveNoteBtn').onclick = () => {
     const title = box.querySelector('#noteTitle').value.trim() || '未命名笔记';
     const body = box.querySelector('#noteBody').value;
     localFiles.unshift({
-      id: Date.now(), name: title + '.txt', format: 'TXT',
-      size: new Blob([body]).size, category: 'text', textContent: body, createdAt: Date.now()
+      id: Date.now(),
+      name: title + '.txt',
+      format: 'TXT',
+      size: new Blob([body]).size,
+      category: 'text',
+      textContent: body,
+      createdAt: Date.now()
     });
     modal.classList.remove('open');
     saveFilesMeta();
@@ -740,23 +1009,36 @@ document.getElementById('openNoteModalBtn').addEventListener('click', () => {
 });
 document.getElementById('fileFilter').addEventListener('change', renderFiles);
 
-// ==================== 7. 放松音乐 + 原生多格式音频导入 + EQ 音效系统 ====================
-let ambCtx = null, ambNodes = [], ambGain = null, sleepTimeout = null;
+// ==================== 7. 在线搜歌 + 安卓原生后台音乐 + 硬件EQ + 白噪音 ====================
+let ambCtx = null;
+let ambNodes = [];
+let ambGain = null;
+let sleepTimeout = null;
+
 function stopAmbient() {
   ambNodes.forEach(n => { try { n.stop?.(); n.disconnect?.(); } catch {} });
   ambNodes = [];
   document.querySelectorAll('.ambient-btn').forEach(b => b.classList.remove('playing'));
-  if (sleepTimeout) { clearTimeout(sleepTimeout); sleepTimeout = null; }
-  document.getElementById('timerStatus').textContent = '';
+  if (Capacitor.isNativePlatform()) {
+    try { NativeTools.setKeepAlive({ active: false }); } catch {}
+  }
 }
+
 function applySleepTimer() {
-  if (sleepTimeout) { clearTimeout(sleepTimeout); sleepTimeout = null; }
+  if (sleepTimeout) {
+    clearTimeout(sleepTimeout);
+    sleepTimeout = null;
+  }
   const mins = Number(document.getElementById('sleepTimer').value);
   if (mins > 0) {
-    document.getElementById('timerStatus').textContent = `⏱️ 音乐与白噪音将在 ${mins} 分钟后自动停止`;
-    sleepTimeout = setTimeout(() => {
+    document.getElementById('timerStatus').textContent = `⏱️ 将在 ${mins} 分钟后自动停止播放`;
+    sleepTimeout = setTimeout(async () => {
       stopAmbient();
-      audioPlayer.pause();
+      if (Capacitor.isNativePlatform()) {
+        try { await NativeTools.audioStop(); } catch {}
+      } else {
+        audioPlayer.pause();
+      }
       playPauseBtn.textContent = '▶️ 播放';
     }, mins * 60000);
   } else {
@@ -775,197 +1057,384 @@ function playAmbient(type, btnEl) {
 
   if (type === 'alpha') {
     [261.63, 329.63, 392.0, 493.88].forEach(freq => {
-      const osc = ambCtx.createOscillator(), g = ambCtx.createGain();
-      osc.type = 'sine'; osc.frequency.value = freq; g.gain.value = 0.09;
-      osc.connect(g); g.connect(ambGain); osc.start();
+      const osc = ambCtx.createOscillator();
+      const g = ambCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      g.gain.value = 0.09;
+      osc.connect(g);
+      g.connect(ambGain);
+      osc.start();
       ambNodes.push(osc, g);
     });
   } else {
-    const bufferSize = ambCtx.sampleRate * 3;
-    const buffer = ambCtx.createBuffer(1, bufferSize, ambCtx.sampleRate);
-    const data = buffer.getChannelData(0);
-    let lastOut = 0;
-    for (let i = 0; i < bufferSize; i++) {
+    const bs = ambCtx.sampleRate * 3;
+    const buf = ambCtx.createBuffer(1, bs, ambCtx.sampleRate);
+    const d = buf.getChannelData(0);
+    let lo = 0;
+    for (let i = 0; i < bs; i++) {
       const w = Math.random() * 2 - 1;
-      if (type === 'fire' || type === 'ocean') { data[i] = (lastOut + 0.02 * w) / 1.02; lastOut = data[i]; data[i] *= 3.5; }
-      else data[i] = w * 0.45;
+      if (type === 'fire' || type === 'ocean') {
+        d[i] = (lo + 0.02 * w) / 1.02;
+        lo = d[i];
+        d[i] *= 3.5;
+      } else {
+        d[i] = w * 0.45;
+      }
     }
     const noise = ambCtx.createBufferSource();
-    noise.buffer = buffer; noise.loop = true;
+    noise.buffer = buf;
+    noise.loop = true;
     const filter = ambCtx.createBiquadFilter();
     filter.type = type === 'rain' ? 'bandpass' : 'lowpass';
     filter.frequency.value = type === 'rain' ? 1100 : (type === 'ocean' ? 420 : 260);
     noise.connect(filter);
     if (type === 'ocean') {
-      const lfo = ambCtx.createOscillator(), lfoG = ambCtx.createGain(), wG = ambCtx.createGain();
-      lfo.frequency.value = 0.12; lfoG.gain.value = 0.35; wG.gain.value = 0.65;
-      lfo.connect(lfoG); lfoG.connect(wG.gain); filter.connect(wG); wG.connect(ambGain);
-      lfo.start(); ambNodes.push(lfo, lfoG, wG);
-    } else { filter.connect(ambGain); }
-    noise.start(); ambNodes.push(noise, filter);
+      const lfo = ambCtx.createOscillator();
+      const lg = ambCtx.createGain();
+      const wg = ambCtx.createGain();
+      lfo.frequency.value = 0.12;
+      lg.gain.value = 0.35;
+      wg.gain.value = 0.65;
+      lfo.connect(lg);
+      lg.connect(wg.gain);
+      filter.connect(wg);
+      wg.connect(ambGain);
+      lfo.start();
+      ambNodes.push(lfo, lg, wg);
+    } else {
+      filter.connect(ambGain);
+    }
+    noise.start();
+    ambNodes.push(noise, filter);
   }
+
   btnEl.classList.add('playing');
+  if (Capacitor.isNativePlatform()) {
+    try { NativeTools.setKeepAlive({ active: true, title: btnEl.textContent }); } catch {}
+  }
   applySleepTimer();
 }
-document.querySelectorAll('.ambient-btn').forEach(btn => btn.addEventListener('click', () => playAmbient(btn.dataset.sound, btn)));
-document.getElementById('stopAmbientBtn').addEventListener('click', stopAmbient);
-document.getElementById('ambientVol').addEventListener('input', (e) => { if (ambGain) ambGain.gain.value = Number(e.target.value); });
 
-// 多格式本地音频 + 3段EQ & 环绕音效引擎
+document.querySelectorAll('.ambient-btn').forEach(btn => {
+  btn.addEventListener('click', () => playAmbient(btn.dataset.sound, btn));
+});
+document.getElementById('stopAmbientBtn').addEventListener('click', stopAmbient);
+document.getElementById('ambientVol').addEventListener('input', (e) => {
+  if (ambGain) ambGain.gain.value = Number(e.target.value);
+});
+
 const audioPlayer = document.getElementById('audioPlayer');
 const musicSeek = document.getElementById('musicSeek');
 const curTimeEl = document.getElementById('curTime');
 const durTimeEl = document.getElementById('durTime');
 const playPauseBtn = document.getElementById('playPauseBtn');
 const loopModeBtn = document.getElementById('loopModeBtn');
+
 let tracks = JSON.parse(localStorage.getItem('tracks_v3') || '[]');
 let currentTrackIdx = -1;
-let loopMode = 'list'; // list | single | shuffle
+let loopMode = 'list';
+let activeEqPreset = 'flat';
+let nativeDurationMs = 0;
+let isUserSeeking = false;
 
-// WebAudio EQ 节点
-let eqCtx = null, eqSource = null, bassFilter = null, midFilter = null, trebleFilter = null, delayNode = null, wetGain = null;
+const EQ_PRESETS = {
+  flat: { b: 0, m: 0, t: 0 },
+  bass: { b: 9, m: 1, t: -1 },
+  vocal: { b: -2, m: 6, t: 4 },
+  sleep: { b: 2, m: -2, t: -7 },
+  hall: { b: 5, m: 2, t: 6 }
+};
 
-function ensureEqGraph() {
-  if (eqCtx) {
-    if (eqCtx.state === 'suspended') eqCtx.resume();
-    return;
-  }
-  try {
-    eqCtx = new (window.AudioContext || window.webkitAudioContext)();
-    eqSource = eqCtx.createMediaElementSource(audioPlayer);
-    bassFilter = eqCtx.createBiquadFilter(); bassFilter.type = 'lowshelf'; bassFilter.frequency.value = 100;
-    midFilter = eqCtx.createBiquadFilter(); midFilter.type = 'peaking'; midFilter.frequency.value = 1000; midFilter.Q.value = 1;
-    trebleFilter = eqCtx.createBiquadFilter(); trebleFilter.type = 'highshelf'; trebleFilter.frequency.value = 7500;
-
-    // 轻微大厅混响延迟通道
-    delayNode = eqCtx.createDelay(); delayNode.delayTime.value = 0.045;
-    wetGain = eqCtx.createGain(); wetGain.gain.value = 0.0;
-
-    eqSource.connect(bassFilter);
-    bassFilter.connect(midFilter);
-    midFilter.connect(trebleFilter);
-    trebleFilter.connect(eqCtx.destination);
-
-    trebleFilter.connect(delayNode);
-    delayNode.connect(wetGain);
-    wetGain.connect(eqCtx.destination);
-    applyEqSliders();
-  } catch (e) {
-    console.warn('EQ init skipped:', e);
-  }
+function fmtSec(sec) {
+  if (!isFinite(sec) || sec < 0) return '00:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-function applyEqSliders() {
+function updateTrackUiHeader(title, format) {
+  document.getElementById('nowPlaying').textContent = '🎵 ' + title;
+  const badge = document.getElementById('nowFormatBadge');
+  badge.textContent = format || 'AUDIO';
+  badge.style.display = 'inline-block';
+}
+
+function syncEqToEngine() {
   const b = Number(document.getElementById('eqBass').value);
   const m = Number(document.getElementById('eqMid').value);
   const t = Number(document.getElementById('eqTreble').value);
   document.getElementById('eqBassVal').textContent = `${b > 0 ? '+' : ''}${b}dB`;
   document.getElementById('eqMidVal').textContent = `${m > 0 ? '+' : ''}${m}dB`;
   document.getElementById('eqTrebleVal').textContent = `${t > 0 ? '+' : ''}${t}dB`;
-  if (bassFilter) bassFilter.gain.value = b;
-  if (midFilter) midFilter.gain.value = m;
-  if (trebleFilter) trebleFilter.gain.value = t;
+  if (Capacitor.isNativePlatform()) {
+    NativeTools.audioSetEq({ bass: b, mid: m, treble: t, preset: activeEqPreset }).catch(() => {});
+  }
 }
-
-const EQ_PRESETS = {
-  flat:  { b: 0, m: 0, t: 0, wet: 0 },
-  bass:  { b: 9, m: 1, t: -1, wet: 0 },
-  vocal: { b: -2, m: 6, t: 4, wet: 0 },
-  sleep: { b: 2, m: -2, t: -7, wet: 0.08 },
-  hall:  { b: 4, m: 1, t: 5, wet: 0.25 }
-};
 
 document.querySelectorAll('#eqPresets .eq-pill').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('#eqPresets .eq-pill').forEach(x => x.classList.remove('active'));
     btn.classList.add('active');
-    const p = EQ_PRESETS[btn.dataset.eq] || EQ_PRESETS.flat;
+    activeEqPreset = btn.dataset.eq;
+    const p = EQ_PRESETS[activeEqPreset] || EQ_PRESETS.flat;
     document.getElementById('eqBass').value = p.b;
     document.getElementById('eqMid').value = p.m;
     document.getElementById('eqTreble').value = p.t;
-    ensureEqGraph();
-    applyEqSliders();
-    if (wetGain) wetGain.gain.value = p.wet;
+    syncEqToEngine();
   });
 });
+
 ['eqBass', 'eqMid', 'eqTreble'].forEach(id => {
-  document.getElementById(id).addEventListener('input', () => {
-    ensureEqGraph();
-    applyEqSliders();
-  });
+  document.getElementById(id).addEventListener('input', syncEqToEngine);
 });
 
 document.getElementById('playSpeed').addEventListener('change', (e) => {
-  audioPlayer.playbackRate = Number(e.target.value);
+  const sp = Number(e.target.value);
+  if (Capacitor.isNativePlatform()) NativeTools.audioSetSpeed({ speed: sp }).catch(() => {});
+  else audioPlayer.playbackRate = sp;
 });
 
 loopModeBtn.addEventListener('click', () => {
-  if (loopMode === 'list') { loopMode = 'single'; loopModeBtn.textContent = '🔂 单曲'; }
-  else if (loopMode === 'single') { loopMode = 'shuffle'; loopModeBtn.textContent = '🔀 随机'; }
-  else { loopMode = 'list'; loopModeBtn.textContent = '🔁 列表'; }
+  if (loopMode === 'list') {
+    loopMode = 'single';
+    loopModeBtn.textContent = '🔂 单曲';
+  } else if (loopMode === 'single') {
+    loopMode = 'shuffle';
+    loopModeBtn.textContent = '🔀 随机';
+  } else {
+    loopMode = 'list';
+    loopModeBtn.textContent = '🔁 列表';
+  }
+  if (Capacitor.isNativePlatform()) NativeTools.audioSetLoopMode({ loopMode }).catch(() => {});
 });
 
-function fmtSec(sec) {
-  if (!isFinite(sec) || sec < 0) return '00:00';
-  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+function saveTracks() {
+  localStorage.setItem('tracks_v3', JSON.stringify(tracks));
+  renderTracks();
 }
 
-function saveTracks() { localStorage.setItem('tracks_v3', JSON.stringify(tracks)); renderTracks(); }
+async function playSingleOnlineUrl(url, title, format) {
+  updateTrackUiHeader(title, format);
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await NativeTools.audioPlayList({
+        paths: [url],
+        titles: [title],
+        index: 0,
+        loopMode: 'single',
+        speed: Number(document.getElementById('playSpeed').value),
+        bass: Number(document.getElementById('eqBass').value),
+        mid: Number(document.getElementById('eqMid').value),
+        treble: Number(document.getElementById('eqTreble').value)
+      });
+      playPauseBtn.textContent = '⏸ 暂停';
+      applySleepTimer();
+    } catch (e) {
+      alert('在线播放失败：' + e.message);
+    }
+  } else {
+    audioPlayer.src = url;
+    audioPlayer.play().catch(() => {});
+  }
+}
 
 async function playTrackAt(idx) {
   if (!tracks.length) return;
   currentTrackIdx = (idx + tracks.length) % tracks.length;
   const t = tracks[currentTrackIdx];
-  const src = t.localPath ? Capacitor.convertFileSrc(t.localPath) : t.webUrl;
-  if (!src) return alert('音频路径无效，请重新导入');
-
-  ensureEqGraph();
-  audioPlayer.src = src;
-  audioPlayer.playbackRate = Number(document.getElementById('playSpeed').value);
-  audioPlayer.load();
-  document.getElementById('nowPlaying').textContent = '🎵 ' + t.name;
-  const fmtBadge = document.getElementById('nowFormatBadge');
-  fmtBadge.textContent = t.format || 'AUDIO';
-  fmtBadge.style.display = 'inline-block';
-
-  try {
-    await audioPlayer.play();
-    playPauseBtn.textContent = '⏸ 暂停';
-    applySleepTimer();
-  } catch (err) {
-    playPauseBtn.textContent = '▶️ 播放';
-    alert('该格式暂不支持解码（请确认不是网易云 .ncm / QQ音乐加密格式）：' + err.message);
+  updateTrackUiHeader(t.name, t.format);
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await NativeTools.audioPlayList({
+        paths: tracks.map(x => x.localPath || x.onlineUrl || ''),
+        titles: tracks.map(x => x.name || '音乐'),
+        index: currentTrackIdx,
+        loopMode,
+        speed: Number(document.getElementById('playSpeed').value),
+        bass: Number(document.getElementById('eqBass').value),
+        mid: Number(document.getElementById('eqMid').value),
+        treble: Number(document.getElementById('eqTreble').value)
+      });
+      playPauseBtn.textContent = '⏸ 暂停';
+      applySleepTimer();
+    } catch (err) {
+      playPauseBtn.textContent = '▶️ 播放';
+      alert('播放失败：' + err.message);
+    }
+  } else {
+    audioPlayer.src = t.webUrl || t.onlineUrl || '';
+    audioPlayer.play().catch(() => {});
   }
 }
 
-audioPlayer.addEventListener('loadedmetadata', () => { durTimeEl.textContent = fmtSec(audioPlayer.duration); });
-audioPlayer.addEventListener('timeupdate', () => {
-  curTimeEl.textContent = fmtSec(audioPlayer.currentTime);
-  if (audioPlayer.duration) musicSeek.value = (audioPlayer.currentTime / audioPlayer.duration) * 100;
+setInterval(async () => {
+  if (!Capacitor.isNativePlatform() || document.visibilityState !== 'visible') return;
+  try {
+    const st = await NativeTools.audioGetStatus();
+    if (!st) return;
+    nativeDurationMs = st.durationMs || 0;
+    playPauseBtn.textContent = st.playing ? '⏸ 暂停' : '▶️ 播放';
+    if (!isUserSeeking && nativeDurationMs > 0) {
+      curTimeEl.textContent = fmtSec((st.currentMs || 0) / 1000);
+      durTimeEl.textContent = fmtSec(nativeDurationMs / 1000);
+      musicSeek.value = ((st.currentMs || 0) / nativeDurationMs) * 100;
+    }
+  } catch {}
+}, 500);
+
+musicSeek.addEventListener('pointerdown', () => { isUserSeeking = true; });
+musicSeek.addEventListener('touchstart', () => { isUserSeeking = true; }, { passive: true });
+musicSeek.addEventListener('change', async () => {
+  const pct = Number(musicSeek.value) / 100;
+  if (Capacitor.isNativePlatform() && nativeDurationMs > 0) {
+    await NativeTools.audioSeek({ positionMs: Math.floor(pct * nativeDurationMs) }).catch(() => {});
+  } else if (audioPlayer.duration) {
+    audioPlayer.currentTime = pct * audioPlayer.duration;
+  }
+  isUserSeeking = false;
 });
-audioPlayer.addEventListener('ended', () => {
-  if (!tracks.length) return;
-  if (loopMode === 'single') playTrackAt(currentTrackIdx);
-  else if (loopMode === 'shuffle') playTrackAt(Math.floor(Math.random() * tracks.length));
-  else playTrackAt(currentTrackIdx + 1);
+
+playPauseBtn.addEventListener('click', async () => {
+  if (Capacitor.isNativePlatform()) {
+    const st = await NativeTools.audioGetStatus().catch(() => ({ playing: false }));
+    if (st.playing) {
+      await NativeTools.audioPause();
+      playPauseBtn.textContent = '▶️ 播放';
+    } else if (st.durationMs > 0) {
+      await NativeTools.audioResume();
+      playPauseBtn.textContent = '⏸ 暂停';
+    } else if (tracks.length) {
+      playTrackAt(0);
+    }
+  } else {
+    if (audioPlayer.paused) audioPlayer.play();
+    else audioPlayer.pause();
+  }
 });
-musicSeek.addEventListener('input', () => {
-  if (audioPlayer.duration) audioPlayer.currentTime = (Number(musicSeek.value) / 100) * audioPlayer.duration;
-});
-playPauseBtn.addEventListener('click', () => {
-  if (currentTrackIdx < 0 && tracks.length > 0) return playTrackAt(0);
-  ensureEqGraph();
-  if (audioPlayer.paused) { audioPlayer.play(); playPauseBtn.textContent = '⏸ 暂停'; }
-  else { audioPlayer.pause(); playPauseBtn.textContent = '▶️ 播放'; }
-});
+
 document.getElementById('prevTrackBtn').addEventListener('click', () => playTrackAt(currentTrackIdx - 1));
 document.getElementById('nextTrackBtn').addEventListener('click', () => playTrackAt(currentTrackIdx + 1));
+
+// 在线搜索音乐（Audius 完整版免费曲库 + Apple iTunes 全球中英文曲库）
+async function searchOnlineMusic(query) {
+  const q = query.trim();
+  const resBox = document.getElementById('onlineMusicResults');
+  if (!q) {
+    resBox.innerHTML = '';
+    return;
+  }
+  resBox.innerHTML = '<div class="sub-text" style="padding:8px;">🔍 正在全网曲库搜歌...</div>';
+  const songs = [];
+
+  try {
+    const au = await httpGetJson(
+      `https://discoveryprovider.audius.co/v1/tracks/search?query=${encodeURIComponent(q)}&app_name=studyhub`
+    );
+    (au?.data || []).slice(0, 5).forEach(t => {
+      if (t.id) {
+        songs.push({
+          title: t.title,
+          artist: t.user?.name || '独立音乐人',
+          cover: t.artwork?.['150x150'] || '',
+          url: `https://discoveryprovider.audius.co/v1/tracks/${t.id}/stream?app_name=studyhub`,
+          format: 'MP3',
+          tag: '完整版'
+        });
+      }
+    });
+  } catch {}
+
+  try {
+    const it = await httpGetJson(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=song&limit=10&country=CN`
+    );
+    (it?.results || []).forEach(r => {
+      if (r.previewUrl) {
+        songs.push({
+          title: r.trackName,
+          artist: r.artistName || '歌手',
+          cover: r.artworkUrl100 || '',
+          url: r.previewUrl,
+          format: 'M4A',
+          tag: '正版试听'
+        });
+      }
+    });
+  } catch {}
+
+  if (!songs.length) {
+    resBox.innerHTML = '<div class="sub-text" style="padding:8px;">未搜到相关歌曲，换个关键词试试~</div>';
+    return;
+  }
+
+  resBox.innerHTML = '';
+  songs.slice(0, 12).forEach(s => {
+    const row = document.createElement('div');
+    row.className = 'item-row';
+    row.innerHTML = `
+      <div style="display:flex; gap:10px; align-items:center; flex:1; min-width:0;">
+        ${s.cover ? `<img src="${s.cover}" class="cover-img" />` : `<div class="cover-img" style="display:flex;align-items:center;justify-content:center;">🎵</div>`}
+        <div style="min-width:0;">
+          <div style="font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${s.title}</div>
+          <div class="sub-text">
+            <span class="badge ${s.tag === '完整版' ? 'badge-alarm' : ''}">${s.tag}</span>
+            <span class="badge badge-fmt">${s.format}</span> ${s.artist}
+          </div>
+        </div>
+      </div>
+      <div style="display:flex; gap:4px; flex-shrink:0;">
+        <button class="btn btn-sm play-online">▶️</button>
+        <button class="btn btn-sm btn-green dl-online">⬇️存本地</button>
+      </div>
+    `;
+    row.querySelector('.play-online').onclick = () => {
+      playSingleOnlineUrl(s.url, `${s.title} - ${s.artist}`, s.format);
+    };
+    row.querySelector('.dl-online').onclick = async (e) => {
+      const btn = e.target;
+      btn.textContent = '下载中...';
+      btn.disabled = true;
+      try {
+        if (Capacitor.isNativePlatform()) {
+          const saved = await NativeTools.downloadUrlToLocal({
+            url: s.url,
+            name: `${s.title}-${s.artist}.${s.format.toLowerCase()}`,
+            format: s.format
+          });
+          tracks.push({ id: Date.now() + Math.random(), ...saved });
+        } else {
+          tracks.push({
+            id: Date.now() + Math.random(),
+            name: `${s.title} - ${s.artist}`,
+            format: s.format,
+            size: 0,
+            onlineUrl: s.url
+          });
+        }
+        saveTracks();
+        btn.textContent = '已存✅';
+      } catch (err) {
+        alert('缓存失败：' + err.message);
+        btn.textContent = '⬇️存本地';
+        btn.disabled = false;
+      }
+    };
+    resBox.appendChild(row);
+  });
+}
+
+document.getElementById('searchOnlineMusicBtn').addEventListener('click', () => {
+  searchOnlineMusic(document.getElementById('onlineMusicQuery').value);
+});
+document.getElementById('onlineMusicQuery').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') searchOnlineMusic(e.target.value);
+});
 
 function renderTracks() {
   const list = document.getElementById('trackList');
   if (!tracks.length) {
-    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:10px;">点右上角“+ 导入多格式音乐”，支持 MP3 / FLAC / WAV / M4A / AAC / OGG / OPUS 🎶</div>';
+    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:10px;">可在上方在线搜歌缓存，或导入本地 MP3/FLAC/WAV/M4A/OGG 🎶</div>';
     return;
   }
   list.innerHTML = '';
@@ -985,7 +1454,10 @@ function renderTracks() {
     div.querySelector('.play-track').onclick = () => playTrackAt(i);
     div.querySelector('.ren-btn').onclick = () => {
       const nn = prompt('输入新的歌曲名称：', t.name);
-      if (nn && nn.trim()) { t.name = nn.trim(); saveTracks(); }
+      if (nn && nn.trim()) {
+        t.name = nn.trim();
+        saveTracks();
+      }
     };
     div.querySelector('.del-btn').onclick = async () => {
       if (Capacitor.isNativePlatform() && t.localPath) {
@@ -1003,13 +1475,11 @@ document.getElementById('nativeImportMusicBtn').addEventListener('click', async 
     try {
       const res = await NativeTools.pickFiles({ accept: 'audio/*', multiple: true });
       const added = res.files || [];
-      for (const f of added) {
-        tracks.push({ id: Date.now() + Math.random(), ...f });
-      }
+      added.forEach(f => tracks.push({ id: Date.now() + Math.random(), ...f }));
       saveTracks();
       if (added.length) playTrackAt(tracks.length - 1);
     } catch (e) {
-      if (!String(e.message).includes('取消')) alert('导入音频失败：' + e.message);
+      if (!String(e.message).includes('取消')) alert('导入失败：' + e.message);
     }
   } else {
     document.getElementById('fallbackMusicInput').click();
@@ -1018,46 +1488,34 @@ document.getElementById('nativeImportMusicBtn').addEventListener('click', async 
 
 document.getElementById('fallbackMusicInput').addEventListener('change', (e) => {
   for (const file of e.target.files) {
-    const fmt = (file.name.split('.').pop() || 'AUDIO').toUpperCase();
-    tracks.push({ id: Date.now() + Math.random(), name: file.name, format: fmt, size: file.size, webUrl: URL.createObjectURL(file) });
+    tracks.push({
+      id: Date.now() + Math.random(),
+      name: file.name,
+      format: (file.name.split('.').pop() || 'AUDIO').toUpperCase(),
+      size: file.size,
+      webUrl: URL.createObjectURL(file)
+    });
   }
   e.target.value = '';
   saveTracks();
   if (tracks.length) playTrackAt(tracks.length - 1);
 });
 
-// ==================== 8. 全球股市 + 可滑动交互态势图 + 双引擎全网任意搜股 ====================
+// ==================== 8. A股专区 + 全球股市 + 可滑动走势图 ====================
 let marketData = { updatedAt: '加载中...', globalNews: [], indices: [], stocks: [] };
 let activeRegion = 'all';
+let activeStockMkt = 'all';
 let customWatchlist = JSON.parse(localStorage.getItem('custom_watchlist_v1') || '[]');
 
-async function httpGetJson(url) {
-  if (Capacitor.isNativePlatform()) {
-    const res = await CapacitorHttp.get({
-      url, headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36' }
-    });
-    return typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
-  } else {
-    const res = await fetch(url);
-    return await res.json();
-  }
-}
-
-async function httpGetText(url) {
-  if (Capacitor.isNativePlatform()) {
-    const res = await CapacitorHttp.get({ url, headers: { 'User-Agent': 'Mozilla/5.0' } });
-    return typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
-  } else {
-    const res = await fetch(url);
-    return await res.text();
-  }
-}
-
-// 静态迷你走势图（列表卡片用）
 function renderMiniSparkline(history, isUp, height = 40) {
-  if (!history || history.length < 2) return `<div class="sub-text" style="height:${height}px;">暂无走势</div>`;
-  const min = Math.min(...history), max = Math.max(...history), span = max - min || 1;
-  const w = 240, pad = 3;
+  if (!history || history.length < 2) {
+    return `<div class="sub-text" style="height:${height}px;">暂无走势</div>`;
+  }
+  const min = Math.min(...history);
+  const max = Math.max(...history);
+  const span = max - min || 1;
+  const w = 240;
+  const pad = 3;
   const pts = history.map((v, i) => [
     (pad + (i / (history.length - 1)) * (w - pad * 2)).toFixed(1),
     (height - pad - ((v - min) / span) * (height - pad * 2)).toFixed(1)
@@ -1066,38 +1524,42 @@ function renderMiniSparkline(history, isUp, height = 40) {
   const area = `${pts[0][0]},${height} ${line} ${pts[pts.length - 1][0]},${height}`;
   const color = isUp ? '#ef4444' : '#10b981';
   const fill = isUp ? 'rgba(239,68,68,0.14)' : 'rgba(16,185,129,0.14)';
-  return `<svg viewBox="0 0 ${w} ${height}" preserveAspectRatio="none" style="width:100%; height:${height}px; display:block;">
-    <polygon points="${area}" fill="${fill}" />
-    <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-  </svg>`;
+  return `
+    <svg viewBox="0 0 ${w} ${height}" preserveAspectRatio="none" style="width:100%; height:${height}px; display:block;">
+      <polygon points="${area}" fill="${fill}" />
+      <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+  `;
 }
 
-// 手指滑动显示精确价格和时间的交互态势图！
 function mountInteractiveChart(container, history, dates, isUp) {
   container.innerHTML = '';
   if (!history || history.length < 2) {
-    container.innerHTML = '<div class="sub-text" style="padding:20px; text-align:center;">暂无走势数据</div>';
+    container.innerHTML = '<div class="sub-text" style="padding:20px; text-align:center;">暂无走势</div>';
     return;
   }
-
   const scrubBar = document.createElement('div');
   scrubBar.className = 'scrub-bar';
   const lastIdx = history.length - 1;
   const firstVal = history[0] || 1;
+
   const updateReadout = (idx) => {
     const val = history[idx];
-    const dt = (dates && dates[idx]) ? dates[idx] : `第${idx + 1}点`;
-    const diffPct = (((val - firstVal) / firstVal) * 100).toFixed(2);
-    const sign = Number(diffPct) >= 0 ? '+' : '';
-    scrubBar.innerHTML = `<span>🕒 ${dt}</span><span>💰 <strong>${val}</strong></span><span class="${Number(diffPct) >= 0 ? 'up' : 'down'}">区间 ${sign}${diffPct}%</span>`;
+    const dt = dates?.[idx] || `点${idx + 1}`;
+    const dp = (((val - firstVal) / firstVal) * 100).toFixed(2);
+    const sign = Number(dp) >= 0 ? '+' : '';
+    scrubBar.innerHTML = `<span>🕒 ${dt}</span><span>💰 <strong>${val}</strong></span><span class="${Number(dp) >= 0 ? 'up' : 'down'}">${sign}${dp}%</span>`;
   };
   updateReadout(lastIdx);
 
   const chartBox = document.createElement('div');
   chartBox.className = 'chart-interactive';
-
-  const w = 320, h = 155, pad = 10;
-  const min = Math.min(...history), max = Math.max(...history), span = max - min || 1;
+  const w = 320;
+  const h = 155;
+  const pad = 10;
+  const min = Math.min(...history);
+  const max = Math.max(...history);
+  const span = max - min || 1;
   const coords = history.map((v, i) => ({
     x: pad + (i / (history.length - 1)) * (w - pad * 2),
     y: h - pad - ((v - min) / span) * (h - pad * 2)
@@ -1110,26 +1572,25 @@ function mountInteractiveChart(container, history, dates, isUp) {
   chartBox.innerHTML = `
     <svg id="scrubSvg" viewBox="0 0 ${w} ${h}" style="width:100%; height:160px; display:block;">
       <polygon points="${area}" fill="${fill}" />
-      <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+      <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.4" />
       <line id="crossLine" x1="${coords[lastIdx].x}" y1="${pad}" x2="${coords[lastIdx].x}" y2="${h - pad}" stroke="#6366f1" stroke-width="1.4" stroke-dasharray="4 3" />
       <circle id="crossDot" cx="${coords[lastIdx].x}" cy="${coords[lastIdx].y}" r="5" fill="${color}" stroke="#fff" stroke-width="2" />
     </svg>
-    <div class="time-row"><span>低: ${min.toFixed(2)}</span><span>👆 左右滑动查看精确时间与价格</span><span>高: ${max.toFixed(2)}</span></div>
+    <div class="time-row"><span>低: ${min.toFixed(2)}</span><span>👆 左右滑动看精确价格与时间</span><span>高: ${max.toFixed(2)}</span></div>
   `;
 
   const svg = chartBox.querySelector('#scrubSvg');
-  const crossLine = chartBox.querySelector('#crossLine');
-  const crossDot = chartBox.querySelector('#crossDot');
-
-  const handleMove = (clientX) => {
+  const cl = chartBox.querySelector('#crossLine');
+  const cd = chartBox.querySelector('#crossDot');
+  const handleMove = (cx) => {
     const rect = svg.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const ratio = Math.max(0, Math.min(1, (cx - rect.left) / rect.width));
     const idx = Math.round(ratio * (history.length - 1));
     const pt = coords[idx];
-    crossLine.setAttribute('x1', pt.x);
-    crossLine.setAttribute('x2', pt.x);
-    crossDot.setAttribute('cx', pt.x);
-    crossDot.setAttribute('cy', pt.y);
+    cl.setAttribute('x1', pt.x);
+    cl.setAttribute('x2', pt.x);
+    cd.setAttribute('cx', pt.x);
+    cd.setAttribute('cy', pt.y);
     updateReadout(idx);
   };
 
@@ -1142,24 +1603,55 @@ function mountInteractiveChart(container, history, dates, isUp) {
   container.appendChild(chartBox);
 }
 
-async function fetchLiveChartForRange(symbol, range, interval) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`;
-  const cData = await httpGetJson(url);
-  const r = cData.chart.result[0];
-  const meta = r.meta || {};
-  const q = r.indicators.quote[0] || {};
-  const rawCloses = q.close || [];
-  const timestamps = r.timestamp || [];
-  const history = [], dates = [];
+async function fetchEastMoneyChart(emSecId, range) {
+  const klt = range === '5d' ? 30 : (range === '1y' ? 102 : 101);
+  const lmt = range === '5d' ? 40 : (range === '3mo' ? 65 : (range === '1y' ? 52 : 25));
+  const url =
+    `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${encodeURIComponent(emSecId)}` +
+    `&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56&klt=${klt}&fqt=1&end=20500101&lmt=${lmt}`;
+  const res = await httpGetJson(url);
+  const klines = res?.data?.klines;
+  if (!klines?.length) throw new Error('东财暂无走势');
+  const history = [];
+  const dates = [];
+  let lo = 0, lh = 0, ll = 0, lv = 0;
+  klines.forEach(line => {
+    const [dt, op, cl, hi, l, vol] = line.split(',');
+    dates.push(dt);
+    history.push(Number(Number(cl).toFixed(2)));
+    lo = Number(op);
+    lh = Number(hi);
+    ll = Number(l);
+    lv = Number(vol);
+  });
+  const price = history[history.length - 1];
+  const prev = history.length >= 2 ? history[history.length - 2] : (Number(res?.data?.preKPrice) || price);
+  const change = Number((price - prev).toFixed(2));
+  const changePct = prev ? Number(((change / prev) * 100).toFixed(2)) : 0;
+  return { price, change, changePct, history, dates, open: lo, high: lh, low: ll, volume: lv };
+}
 
+async function fetchYahooChart(symbol, range, interval) {
+  const cData = await httpGetJson(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`
+  );
+  const r = cData?.chart?.result?.[0];
+  if (!r) throw new Error('Yahoo 无数据');
+  const meta = r.meta || {};
+  const q = r.indicators?.quote?.[0] || {};
+  const rawCloses = q.close || [];
+  const ts = r.timestamp || [];
+  const history = [];
+  const dates = [];
   for (let i = 0; i < rawCloses.length; i++) {
     if (rawCloses[i] != null) {
       history.push(Number(rawCloses[i].toFixed(2)));
-      const d = new Date((timestamps[i] || 0) * 1000);
-      const label = range === '5d'
-        ? `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-        : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      dates.push(label);
+      const d = new Date((ts[i] || 0) * 1000);
+      dates.push(
+        range === '5d'
+          ? `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+          : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      );
     }
   }
   const price = Number((meta.regularMarketPrice || history[history.length - 1] || 0).toFixed(2));
@@ -1175,11 +1667,27 @@ async function fetchLiveChartForRange(symbol, range, interval) {
   };
 }
 
+async function fetchSmartChart(item, range, interval) {
+  if (item.emSecId) {
+    try { return await fetchEastMoneyChart(item.emSecId, range); } catch {}
+  }
+  try {
+    return await fetchYahooChart(item.symbol, range, interval);
+  } catch (e) {
+    const s = item.symbol || '';
+    const guessed = s.endsWith('.SS')
+      ? `1.${s.replace('.SS', '')}`
+      : (s.endsWith('.SZ') ? `0.${s.replace('.SZ', '')}` : (s.endsWith('.HK') ? `116.${s.replace('.HK', '').padStart(5, '0')}` : ''));
+    if (guessed) return await fetchEastMoneyChart(guessed, range);
+    throw e;
+  }
+}
+
 function openStockDetailModal(item) {
   const isUp = (item.changePct || 0) >= 0;
   const sign = isUp ? '+' : '';
   const box = document.createElement('div');
-  const newsHtml = (item.news && item.news.length)
+  const newsHtml = (item.news || []).length
     ? item.news.map(n => `
         <a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener">
           <div style="font-weight:500;">${n.title}</div>
@@ -1189,8 +1697,8 @@ function openStockDetailModal(item) {
 
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">
-      <span id="mdPrice" style="font-size:26px; font-weight:700;">${item.price ?? '--'}</span>
-      <span id="mdChg" class="${isUp ? 'up' : 'down'}" style="font-size:15px;">${sign}${item.change ?? 0} (${sign}${item.changePct ?? 0}%)</span>
+      <span style="font-size:26px; font-weight:700;">${item.price ?? '--'}</span>
+      <span class="${isUp ? 'up' : 'down'}" style="font-size:15px;">${sign}${item.change ?? 0} (${sign}${item.changePct ?? 0}%)</span>
     </div>
     <div class="day-tabs" id="rangeTabs" style="margin-bottom:6px;">
       <button class="day-pill" data-r="5d" data-i="30m">5日分时</button>
@@ -1217,13 +1725,12 @@ function openStockDetailModal(item) {
     btn.addEventListener('click', async () => {
       box.querySelectorAll('#rangeTabs .day-pill').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      host.innerHTML = '<div class="sub-text" style="padding:30px; text-align:center;">正在加载实时走势数据...</div>';
+      host.innerHTML = '<div class="sub-text" style="padding:30px; text-align:center;">加载走势中...</div>';
       try {
-        const res = await fetchLiveChartForRange(item.symbol, btn.dataset.r, btn.dataset.i);
-        const upNow = res.changePct >= 0;
-        mountInteractiveChart(host, res.history, res.dates, upNow);
+        const res = await fetchSmartChart(item, btn.dataset.r, btn.dataset.i);
+        mountInteractiveChart(host, res.history, res.dates, res.changePct >= 0);
       } catch (e) {
-        host.innerHTML = `<div class="sub-text" style="color:#dc2626; padding:12px;">加载该周期走势失败：${e.message}</div>`;
+        host.innerHTML = `<div class="sub-text" style="color:#dc2626; padding:12px;">加载失败：${e.message}</div>`;
       }
     });
   });
@@ -1233,7 +1740,6 @@ function openStockDetailModal(item) {
 
 function renderStocks(keyword = '') {
   document.getElementById('stockUpdated').textContent = '更新时间：' + (marketData.updatedAt || '--');
-
   const indices = (marketData.indices || []).filter(i => activeRegion === 'all' || i.region === activeRegion);
   const idxGrid = document.getElementById('indicesGrid');
   idxGrid.innerHTML = '';
@@ -1262,22 +1768,23 @@ function renderStocks(keyword = '') {
           <div style="font-size:13px;">${n.title}</div>
           <div class="sub-text">${n.source} · ${n.time}</div>
         </a>`).join('')
-    : '<div class="sub-text">点击上方“刷新”获取全球头条</div>';
+    : '<div class="sub-text">点击“刷新”获取每日头条</div>';
 
   const allStocks = [...customWatchlist, ...(marketData.stocks || [])];
   const kw = keyword.trim().toLowerCase();
   const filtered = allStocks.filter(s => {
-    if (!kw) return true;
-    return (s.name || '').toLowerCase().includes(kw) ||
+    const mktOk = activeStockMkt === 'all' || s.market === activeStockMkt;
+    const kwOk = !kw ||
+      (s.name || '').toLowerCase().includes(kw) ||
       (s.symbol || '').toLowerCase().includes(kw) ||
-      (s.market || '').toLowerCase().includes(kw) ||
-      (s.summary || '').toLowerCase().includes(kw);
+      (s.market || '').toLowerCase().includes(kw);
+    return mktOk && kwOk;
   });
 
   const list = document.getElementById('stocksList');
   list.innerHTML = '';
   if (!filtered.length) {
-    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:12px;">本地自选未匹配，请点右边 <strong>🔍 全网搜</strong> 实时检索全球任意一只股票！</div>';
+    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:12px;">本地未匹配，请点上方 <strong>🔍 全网搜</strong> 查全球任意 A股/港股/美股！</div>';
     return;
   }
 
@@ -1297,7 +1804,7 @@ function renderStocks(keyword = '') {
       <div style="display:flex; justify-content:space-between; width:100%; align-items:center; cursor:pointer;" class="st-head">
         <div>
           <strong>${s.name}</strong> <span class="badge">${s.market || '全球'}</span>
-          <div class="sub-text">${s.symbol} · 点开滑动看精确价格与时间</div>
+          <div class="sub-text">${s.symbol} · 点开滑动看价</div>
         </div>
         <div style="text-align:right;">
           <div style="font-size:16px; font-weight:700;">${s.price}</div>
@@ -1316,8 +1823,7 @@ function renderStocks(keyword = '') {
   });
 }
 
-// 东方财富 + Yahoo Finance 双引擎全网任意搜股（支持中文、A股/港股/美股/欧日/加密货币）
-function mapEastMoneyToYahooSymbol(item) {
+function mapEastMoneyToSymbol(item) {
   const code = String(item.Code || '');
   const mkt = String(item.MktNum || '');
   if (mkt === '1') return `${code}.SS`;
@@ -1332,39 +1838,46 @@ function mapEastMoneyToYahooSymbol(item) {
 async function liveSearchGlobalStock(query) {
   const q = query.trim();
   const resBox = document.getElementById('liveSearchResult');
-  if (!q) { resBox.innerHTML = ''; return; }
-  resBox.innerHTML = '<div class="card" style="background:#eef2ff;">🔍 正在通过全球双引擎检索所有交易所个股...</div>';
-
+  if (!q) {
+    resBox.innerHTML = '';
+    return;
+  }
+  resBox.innerHTML = '<div class="card" style="background:#eef2ff;">🔍 正在全网检索 A股 / 港股 / 美股 / 全球个股与板块...</div>';
   const candidates = [];
   const seen = new Set();
   const pushCand = (c) => {
-    if (!c.symbol || seen.has(c.symbol.toUpperCase())) return;
-    seen.add(c.symbol.toUpperCase());
-    candidates.push(c);
+    if (c.symbol && !seen.has(c.symbol.toUpperCase())) {
+      seen.add(c.symbol.toUpperCase());
+      candidates.push(c);
+    }
   };
 
-  // 引擎1：东方财富（对中文名、A股、港股、中概股极其精准）
   try {
-    const emUrl = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=6`;
-    const emData = await httpGetJson(emUrl);
+    const emData = await httpGetJson(
+      `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=12`
+    );
     const rows = emData?.QuotationCodeTable?.Data || [];
+    // 真实个股排在概念板块前面
+    rows.sort((a, b) => (String(a.MktNum) === '90' ? 1 : 0) - (String(b.MktNum) === '90' ? 1 : 0));
     rows.forEach(r => {
       pushCand({
-        symbol: mapEastMoneyToYahooSymbol(r),
+        symbol: mapEastMoneyToSymbol(r),
+        emSecId: r.QuoteID || `${r.MktNum}.${r.Code}`,
         name: r.Name || r.Code,
-        market: r.SecurityTypeName || '全球'
+        market: r.SecurityTypeName || 'A股'
       });
     });
   } catch {}
 
-  // 引擎2：Yahoo Finance（全球美/欧/日/印/加密全覆盖）
   try {
-    const yfUrl = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=6&newsCount=3`;
-    const yfData = await httpGetJson(yfUrl);
+    const yfData = await httpGetJson(
+      `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=6&newsCount=2`
+    );
     (yfData.quotes || []).forEach(qt => {
       if (qt.symbol) {
         pushCand({
           symbol: qt.symbol,
+          emSecId: '',
           name: qt.shortname || qt.longname || qt.symbol,
           market: qt.exchDisp || qt.exchange || '全球'
         });
@@ -1373,12 +1886,12 @@ async function liveSearchGlobalStock(query) {
   } catch {}
 
   if (!candidates.length) {
-    resBox.innerHTML = '<div class="sub-text" style="padding:8px;">全网未找到匹配股票，请检查拼写或直接输入代码（如 600519、0700、AAPL、TSLA）。</div>';
+    resBox.innerHTML = '<div class="sub-text" style="padding:8px;">未找到匹配股票，请检查名称或代码。</div>';
     return;
   }
 
-  resBox.innerHTML = '<div class="sub-text" style="margin-bottom:6px;">🌐 全网检索到以下股票（点击查看实时可滑动态势图与每日新闻）：</div>';
-  candidates.slice(0, 8).forEach(cand => {
+  resBox.innerHTML = '<div class="sub-text" style="margin-bottom:6px;">🌐 全网检索结果（个股优先，点击看实时滑动走势图与新闻）：</div>';
+  candidates.slice(0, 10).forEach(cand => {
     const row = document.createElement('div');
     row.className = 'card';
     row.style.cssText = 'padding:10px; margin-bottom:8px; border:1px solid #c7d2fe; background:#f5f7ff; cursor:pointer;';
@@ -1394,11 +1907,12 @@ async function liveSearchGlobalStock(query) {
     row.onclick = async () => {
       row.querySelector('button').textContent = '加载中...';
       try {
-        const chartInfo = await fetchLiveChartForRange(cand.symbol, '1mo', '1d');
+        const chartInfo = await fetchSmartChart(cand, '1mo', '1d');
         let newsList = [];
         try {
-          const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(cand.name + ' ' + cand.symbol + ' 股价 新闻')}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`;
-          const xmlText = await httpGetText(rssUrl);
+          const xmlText = await httpGetText(
+            `https://news.google.com/rss/search?q=${encodeURIComponent(cand.name + ' 股价 新闻')}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`
+          );
           const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
           newsList = Array.from(doc.querySelectorAll('item')).slice(0, 6).map(it => ({
             title: it.querySelector('title')?.textContent || '',
@@ -1407,14 +1921,13 @@ async function liveSearchGlobalStock(query) {
             link: it.querySelector('link')?.textContent || '#'
           }));
         } catch {}
-
         const fullStock = { ...cand, ...chartInfo, news: newsList };
         openStockDetailModal(fullStock);
         customWatchlist = [fullStock, ...customWatchlist.filter(x => x.symbol !== fullStock.symbol)].slice(0, 12);
         localStorage.setItem('custom_watchlist_v1', JSON.stringify(customWatchlist));
         renderStocks('');
       } catch (err) {
-        alert('拉取实时走势失败：' + err.message);
+        alert('拉取走势失败：' + err.message);
       } finally {
         row.querySelector('button').textContent = '看态势图';
       }
@@ -1425,15 +1938,14 @@ async function liveSearchGlobalStock(query) {
 
 async function fetchMarketData() {
   const repo = localStorage.getItem('github_stock_repo') || DEFAULT_GITHUB_REPO;
-  document.getElementById('stockUpdated').textContent = `正在同步 ${repo} 全球股市...`;
+  document.getElementById('stockUpdated').textContent = `正在同步 ${repo} 股市...`;
   try {
-    const url = `https://raw.githubusercontent.com/${repo}/main/data/market_data.json?t=${Date.now()}`;
-    marketData = await httpGetJson(url);
+    marketData = await httpGetJson(`https://raw.githubusercontent.com/${repo}/main/data/market_data.json?t=${Date.now()}`);
     localStorage.setItem('cached_market_v3', JSON.stringify(marketData));
   } catch (e) {
     const cached = localStorage.getItem('cached_market_v3');
     if (cached) marketData = JSON.parse(cached);
-    document.getElementById('stockUpdated').textContent = '同步失败（请确认网络畅通）：' + e.message;
+    document.getElementById('stockUpdated').textContent = '同步失败：' + e.message;
   }
   renderStocks(document.getElementById('stockSearch').value);
 }
@@ -1446,6 +1958,16 @@ document.querySelectorAll('#regionTabs .day-pill').forEach(btn => {
     renderStocks(document.getElementById('stockSearch').value);
   });
 });
+
+document.querySelectorAll('#stockMarketTabs .day-pill').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#stockMarketTabs .day-pill').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeStockMkt = btn.dataset.mkt;
+    renderStocks(document.getElementById('stockSearch').value);
+  });
+});
+
 document.getElementById('refreshStocksBtn').addEventListener('click', fetchMarketData);
 document.getElementById('stockSearch').addEventListener('input', (e) => renderStocks(e.target.value));
 document.getElementById('stockSearch').addEventListener('keydown', (e) => {
@@ -1455,21 +1977,171 @@ document.getElementById('liveSearchBtn').addEventListener('click', () => {
   liveSearchGlobalStock(document.getElementById('stockSearch').value);
 });
 document.getElementById('configRepoBtn').addEventListener('click', () => {
-  const cur = localStorage.getItem('github_stock_repo') || DEFAULT_GITHUB_REPO;
-  const val = prompt('GitHub 股市数据仓库（格式：用户名/仓库名）：', cur);
-  if (val !== null && val.trim()) {
+  const val = prompt('GitHub 股市数据仓库（用户名/仓库名）：', localStorage.getItem('github_stock_repo') || DEFAULT_GITHUB_REPO);
+  if (val && val.trim()) {
     localStorage.setItem('github_stock_repo', val.trim());
     fetchMarketData();
   }
 });
 
+// ==================== 9. 多语言智能翻译 + 语音朗读 + OCR 识图翻译 ====================
+let transHistory = JSON.parse(localStorage.getItem('trans_hist_v1') || '[]');
+let lastTransResult = '';
+
+function renderTransHistory() {
+  const list = document.getElementById('transHistory');
+  if (!transHistory.length) {
+    list.innerHTML = '<div class="sub-text" style="text-align:center;">暂无翻译记录</div>';
+    return;
+  }
+  list.innerHTML = '';
+  transHistory.slice(0, 15).forEach(h => {
+    const div = document.createElement('div');
+    div.className = 'item-row';
+    div.style.cursor = 'pointer';
+    div.innerHTML = `
+      <div style="flex:1;">
+        <div style="font-size:13px; font-weight:500;">${h.src}</div>
+        <div class="sub-text" style="color:#4f46e5;">${h.dst}</div>
+      </div>
+    `;
+    div.onclick = () => {
+      document.getElementById('transInput').value = h.src;
+      document.getElementById('transOutput').textContent = h.dst;
+      lastTransResult = h.dst;
+    };
+    list.appendChild(div);
+  });
+}
+
+async function doTranslate() {
+  const text = document.getElementById('transInput').value.trim();
+  if (!text) return;
+  const from = document.getElementById('transFrom').value;
+  let to = document.getElementById('transTo').value;
+
+  if (from === 'auto' && to === 'en' && /^[a-zA-Z0-9\s.,!?;:'"()-]+$/.test(text)) {
+    to = 'zh-CN';
+    document.getElementById('transTo').value = 'zh-CN';
+  }
+  const outEl = document.getElementById('transOutput');
+  outEl.textContent = '🌐 正在翻译...';
+
+  let translated = '';
+  try {
+    const g = await httpGetJson(
+      `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(from)}&tl=${encodeURIComponent(to)}&dt=t&q=${encodeURIComponent(text)}`
+    );
+    if (Array.isArray(g?.[0])) {
+      translated = g[0].map(seg => seg?.[0] || '').join('');
+    }
+  } catch {}
+
+  if (!translated) {
+    try {
+      const sl = from === 'auto' ? (/[\u4e00-\u9fa5]/.test(text) ? 'zh-CN' : 'en') : from;
+      const mm = await httpGetJson(
+        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text.slice(0, 480))}&langpair=${encodeURIComponent(sl + '|' + to)}`
+      );
+      translated = mm?.responseData?.translatedText || '';
+    } catch {}
+  }
+
+  if (!translated) {
+    outEl.textContent = '翻译失败，请检查网络后重试。';
+    return;
+  }
+  lastTransResult = translated;
+  outEl.textContent = translated;
+  transHistory = [
+    { src: text.slice(0, 120), dst: translated.slice(0, 160) },
+    ...transHistory.filter(x => x.src !== text.slice(0, 120))
+  ].slice(0, 20);
+  localStorage.setItem('trans_hist_v1', JSON.stringify(transHistory));
+  renderTransHistory();
+}
+
+document.getElementById('doTranslateBtn').addEventListener('click', doTranslate);
+document.getElementById('clearTransBtn').addEventListener('click', () => {
+  document.getElementById('transInput').value = '';
+  document.getElementById('transOutput').textContent = '译文将显示在这里...';
+  lastTransResult = '';
+});
+document.getElementById('swapLangBtn').addEventListener('click', () => {
+  const f = document.getElementById('transFrom');
+  const t = document.getElementById('transTo');
+  if (f.value === 'auto') {
+    f.value = t.value;
+    t.value = t.value === 'zh-CN' ? 'en' : 'zh-CN';
+  } else {
+    const tmp = f.value;
+    f.value = t.value;
+    t.value = tmp;
+  }
+});
+document.getElementById('copyTransBtn').addEventListener('click', async () => {
+  if (!lastTransResult) return;
+  try {
+    await navigator.clipboard.writeText(lastTransResult);
+    alert('已复制译文！');
+  } catch {
+    prompt('请长按复制译文：', lastTransResult);
+  }
+});
+document.getElementById('speakTransBtn').addEventListener('click', async () => {
+  if (!lastTransResult) return;
+  const lang = document.getElementById('transTo').value;
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await NativeTools.speakText({ text: lastTransResult, lang });
+    } catch (e) {
+      alert('朗读失败：' + e.message);
+    }
+  } else if ('speechSynthesis' in window) {
+    const u = new SpeechSynthesisUtterance(lastTransResult);
+    u.lang = lang;
+    speechSynthesis.speak(u);
+  }
+});
+document.getElementById('clearTransHistBtn').addEventListener('click', () => {
+  transHistory = [];
+  localStorage.setItem('trans_hist_v1', '[]');
+  renderTransHistory();
+});
+
+document.getElementById('ocrTranslateBtn').addEventListener('click', async () => {
+  if (!Capacitor.isNativePlatform()) {
+    alert('请在安卓手机 App 中使用图片/文档 OCR 翻译！');
+    return;
+  }
+  try {
+    const res = await NativeTools.pickFiles({ accept: '*/*', multiple: false });
+    const f = res.files?.[0];
+    if (!f) return;
+    document.getElementById('transOutput').textContent = '🧠 正在离线识别图中/文档文字...';
+    const ex = await NativeTools.extractText({ localPath: f.localPath });
+    if (ex.text) {
+      document.getElementById('transInput').value = ex.text;
+      await doTranslate();
+    } else {
+      alert('未识别到文字');
+    }
+  } catch (e) {
+    if (!String(e.message).includes('取消')) alert('识图翻译失败：' + e.message);
+  }
+});
+
 // ==================== 启动初始化 ====================
 (async function bootstrap() {
+  updateLiveClock();
+  setInterval(updateLiveClock, 1000);
   await initNotificationChannels();
   renderDayTabs();
   renderCourses();
   renderExams();
   renderFiles();
   renderTracks();
+  renderTransHistory();
   fetchMarketData();
+  fetchWeatherByCity(localStorage.getItem('weather_city_v1') || '北京');
 })();
