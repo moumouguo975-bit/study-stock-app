@@ -1,0 +1,17 @@
+{
+  "name": "study-stock-app",
+  "version": "1.0.0",
+  "description": "课表考试闹钟、资料库、放松音乐与全球股市助手",
+  "scripts": {
+    "build": "esbuild src/app.js --bundle --outfile=www/app.js --platform=browser"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/local-notifications": "^6.1.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2",
+    "esbuild": "^0.24.0"
+  }
+}
