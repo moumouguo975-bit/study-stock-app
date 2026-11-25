@@ -41,7 +41,7 @@
       background: var(--card); border-radius: 14px; padding: 14px;
       margin-bottom: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
     }
-    .card-title { font-size: 15px; font-weight: 600; margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; }
+    .card-title { font-size: 15px; font-weight: 600; margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
     .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .form-full { grid-column: 1 / -1; }
     input, select, textarea {
@@ -55,6 +55,7 @@
     }
     .btn-sm { padding: 5px 10px; font-size: 12px; }
     .btn-outline { background: var(--primary-light); color: var(--primary); }
+    .btn-warn { background: #fef3c7; color: #b45309; }
     .btn-danger { background: #fee2e2; color: #dc2626; }
     .day-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; }
     .day-pill {
@@ -64,7 +65,7 @@
     .day-pill.active { background: var(--primary); color: #fff; }
     .item-row {
       display: flex; justify-content: space-between; align-items: flex-start;
-      padding: 10px 0; border-bottom: 1px solid var(--border); gap: 10px;
+      padding: 10px 0; border-bottom: 1px solid var(--border); gap: 8px;
     }
     .item-row:last-child { border-bottom: none; }
     .badge {
@@ -73,14 +74,17 @@
     }
     .badge-alarm { background: #fef3c7; color: #b45309; }
     .badge-urgent { background: #fee2e2; color: #b91c1c; }
-    .sub-text { font-size: 12px; color: var(--sub); margin-top: 3px; line-height: 1.4; }
-    /* 股市卡片 */
+    .sub-text { font-size: 12px; color: var(--sub); margin-top: 3px; line-height: 1.45; }
+
+    /* 股市卡片 & 走势图 */
     .idx-scroll { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
     .idx-box {
       background: #f9fafb; border: 1px solid var(--border); border-radius: 10px; padding: 10px;
+      cursor: pointer;
     }
     .up { color: var(--up); font-weight: 600; }
     .down { color: var(--down); font-weight: 600; }
+    .spark-wrap { width: 100%; height: 42px; margin-top: 4px; }
     .news-box {
       margin-top: 8px; padding: 10px; background: #f8fafc;
       border-radius: 8px; border-left: 3px solid var(--primary); font-size: 12px;
@@ -90,14 +94,22 @@
       padding: 5px 0; border-bottom: 1px dashed #e2e8f0;
     }
     .news-link:last-child { border-bottom: none; }
-    /* 音乐卡片 */
+    .search-row { display: flex; gap: 8px; margin-bottom: 10px; }
+
+    /* 音乐播放器 */
     .ambient-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .ambient-btn {
       padding: 14px 10px; border-radius: 12px; border: 1px solid var(--border);
       background: #f9fafb; font-size: 14px; text-align: center; cursor: pointer;
     }
     .ambient-btn.playing { background: var(--primary-light); border-color: var(--primary); color: var(--primary); font-weight: 600; }
-    /* 文件预览 */
+    .player-panel {
+      background: #f8fafc; border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 10px;
+    }
+    .player-controls { display: flex; justify-content: center; align-items: center; gap: 14px; margin-top: 10px; }
+    .time-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--sub); }
+
+    /* 文件与弹窗 */
     .thumb { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
     .modal {
       display: none; position: fixed; inset: 0; z-index: 100;
@@ -108,6 +120,22 @@
       background: #fff; border-radius: 14px; padding: 16px;
       width: 100%; max-width: 560px; max-height: 85vh; overflow: auto;
     }
+
+    /* 全屏闹钟响铃界面 */
+    #ringingOverlay {
+      display: none; position: fixed; inset: 0; z-index: 999;
+      background: linear-gradient(160deg, #dc2626, #7c2d12);
+      color: #fff; flex-direction: column; justify-content: center; align-items: center;
+      padding: 24px; text-align: center;
+    }
+    #ringingOverlay.active { display: flex; }
+    .ring-icon { font-size: 72px; animation: shake 0.4s infinite; }
+    @keyframes shake {
+      0%,100% { transform: rotate(0deg); }
+      25% { transform: rotate(-16deg); }
+      75% { transform: rotate(16deg); }
+    }
+
     /* 底部导航 */
     nav {
       position: fixed; bottom: 0; left: 0; right: 0; height: 64px;
@@ -126,7 +154,7 @@
 <body>
   <header>
     <h1 id="headerTitle">📅 我的课表</h1>
-    <button class="hdr-btn" id="testAlarmBtn">🔔 测试5秒闹钟</button>
+    <button class="hdr-btn" id="testAlarmBtn">⏰ 测试响铃闹钟</button>
   </header>
 
   <!-- 1. 课表页 -->
@@ -134,7 +162,7 @@
     <div class="card">
       <div class="card-title">
         <span>添加课程</span>
-        <button class="btn btn-sm btn-outline" id="openBatchCourseBtn">📋 批量文本/CSV导入</button>
+        <button class="btn btn-sm btn-outline" id="openBatchCourseBtn">📋 批量导入</button>
       </div>
       <div class="form-grid">
         <input id="cName" placeholder="课程名称 (如: 高等数学)" class="form-full" />
@@ -148,17 +176,17 @@
         <input id="cStart" type="time" value="08:00" />
         <input id="cEnd" type="time" value="09:40" />
         <select id="cAdvance">
-          <option value="15">提前15分钟提醒</option>
-          <option value="30">提前30分钟提醒</option>
-          <option value="10">提前10分钟提醒</option>
-          <option value="5">提前5分钟提醒</option>
-          <option value="0">准点提醒</option>
+          <option value="15">提前15分钟响铃</option>
+          <option value="30">提前30分钟响铃</option>
+          <option value="10">提前10分钟响铃</option>
+          <option value="5">提前5分钟响铃</option>
+          <option value="0">准点响铃</option>
         </select>
         <select id="cMode">
-          <option value="alarm">⏰ 闹钟强提醒</option>
+          <option value="alarm">⏰ 响铃闹钟 (强提醒)</option>
           <option value="normal">🔔 普通通知</option>
         </select>
-        <button class="btn form-full" id="addCourseBtn">保存课程并设置每周提醒</button>
+        <button class="btn form-full" id="addCourseBtn">保存课程并设置每周闹钟</button>
       </div>
     </div>
 
@@ -177,18 +205,18 @@
         <input id="eDateTime" type="datetime-local" class="form-full" />
         <input id="eRoom" placeholder="考场/座位号" />
         <select id="eAdvance">
-          <option value="1440">提前1天提醒</option>
-          <option value="120">提前2小时提醒</option>
-          <option value="60">提前1小时提醒</option>
-          <option value="30">提前30分钟提醒</option>
-          <option value="0">准点提醒</option>
+          <option value="1440">提前1天响铃</option>
+          <option value="120">提前2小时响铃</option>
+          <option value="60">提前1小时响铃</option>
+          <option value="30">提前30分钟响铃</option>
+          <option value="0">准点响铃</option>
         </select>
         <select id="eMode">
-          <option value="alarm">⏰ 闹钟强提醒</option>
+          <option value="alarm">⏰ 响铃闹钟</option>
           <option value="normal">🔔 普通通知</option>
         </select>
         <input id="eNote" placeholder="复习重点 / 携带物品备注" />
-        <button class="btn form-full" id="addExamBtn">保存考试计划并设提醒</button>
+        <button class="btn form-full" id="addExamBtn">保存考试计划并设闹钟</button>
       </div>
     </div>
     <div class="card">
@@ -202,7 +230,7 @@
     <div class="card">
       <div class="card-title">导入图片 / 文字 / 常见文件</div>
       <div class="sub-text" style="margin-bottom:10px;">
-        支持手机相册图片（课表截图、考场图）、TXT/CSV、PDF、Word、Excel、PPT等常见文件，全部离线存入本地数据库。
+        支持图片、TXT/CSV、PDF、Word、Excel、PPT，自动转为本地离线数据保存。
       </div>
       <div class="form-grid">
         <label class="btn" style="text-align:center;">
@@ -212,7 +240,6 @@
         <button class="btn btn-outline" id="openNoteModalBtn">📝 新建文字笔记</button>
       </div>
     </div>
-
     <div class="card">
       <div class="card-title">
         <span>我的本地资料库</span>
@@ -231,7 +258,7 @@
   <section id="page-music" class="page">
     <div class="card">
       <div class="card-title">
-        <span>🌿 内置助眠/专注白噪音 (离线免网)</span>
+        <span>🌿 内置助眠/专注白噪音</span>
         <select id="sleepTimer" style="width:auto; padding:4px 8px; font-size:12px;">
           <option value="0">不定时</option>
           <option value="15">15分钟关闭</option>
@@ -246,9 +273,9 @@
         <button class="ambient-btn" data-sound="alpha">🎹 轻柔脑波和弦</button>
       </div>
       <div style="margin-top:12px; display:flex; align-items:center; gap:10px;">
-        <span style="font-size:12px;">音量</span>
-        <input type="range" id="ambientVol" min="0" max="1" step="0.05" value="0.4" />
-        <button class="btn btn-sm btn-danger" id="stopAmbientBtn">停止</button>
+        <span style="font-size:12px; white-space:nowrap;">音量</span>
+        <input type="range" id="ambientVol" min="0" max="1" step="0.05" value="0.5" />
+        <button class="btn btn-sm btn-danger" id="stopAmbientBtn" style="white-space:nowrap;">停止</button>
       </div>
       <div id="timerStatus" class="sub-text"></div>
     </div>
@@ -257,12 +284,24 @@
       <div class="card-title">
         <span>🎧 本地音乐播放器</span>
         <label class="btn btn-sm btn-outline">
-          + 导入音频
-          <input type="file" id="musicUploadInput" multiple accept="audio/*" style="display:none;" />
+          + 导入音乐
+          <input type="file" id="musicUploadInput" multiple accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac,.aac" style="display:none;" />
         </label>
       </div>
-      <div id="nowPlaying" class="sub-text" style="margin-bottom:8px;">尚未播放本地音频</div>
-      <audio id="audioPlayer" controls style="width:100%; margin-bottom:10px;"></audio>
+      <div class="player-panel">
+        <div id="nowPlaying" style="font-weight:600; font-size:14px; margin-bottom:8px; word-break:break-all;">未选择曲目</div>
+        <input type="range" id="musicSeek" min="0" max="100" value="0" step="0.1" />
+        <div class="time-row">
+          <span id="curTime">00:00</span>
+          <span id="durTime">00:00</span>
+        </div>
+        <div class="player-controls">
+          <button class="btn btn-sm btn-outline" id="prevTrackBtn">⏮ 上一首</button>
+          <button class="btn btn-sm" id="playPauseBtn">▶️ 播放</button>
+          <button class="btn btn-sm btn-outline" id="nextTrackBtn">⏭ 下一首</button>
+        </div>
+        <audio id="audioPlayer" preload="metadata"></audio>
+      </div>
       <div id="trackList"></div>
     </div>
   </section>
@@ -271,19 +310,34 @@
   <section id="page-stocks" class="page">
     <div class="card">
       <div class="card-title">
-        <span>🌍 全球股市概览</span>
+        <span>🌍 全球大盘指数 (点击看30日态势)</span>
         <div>
           <button class="btn btn-sm btn-outline" id="refreshStocksBtn">🔄 刷新</button>
-          <button class="btn btn-sm btn-outline" id="configRepoBtn">⚙️ 仓库源</button>
+          <button class="btn btn-sm btn-outline" id="configRepoBtn">⚙️</button>
         </div>
       </div>
-      <div id="stockUpdated" class="sub-text" style="margin-bottom:10px;">正在加载数据...</div>
+      <div id="stockUpdated" class="sub-text" style="margin-bottom:8px;">正在同步全球股市...</div>
+      <div class="day-tabs" id="regionTabs">
+        <button class="day-pill active" data-region="all">全球全部</button>
+        <button class="day-pill" data-region="美洲">美洲</button>
+        <button class="day-pill" data-region="亚太">亚太(A/港/日韩)</button>
+        <button class="day-pill" data-region="欧洲">欧洲</button>
+      </div>
       <div id="indicesGrid" class="idx-scroll"></div>
     </div>
 
     <div class="card">
-      <div class="card-title">📈 个股行情 & 每日消息汇总</div>
-      <input id="stockSearch" placeholder="搜索股票代码、名称或新闻关键词..." style="margin-bottom:10px;" />
+      <div class="card-title">📰 每日全球财经头条汇总</div>
+      <div id="globalNewsList"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">📈 全网搜股 & 个股态势图 / 每日消息</div>
+      <div class="search-row">
+        <input id="stockSearch" placeholder="输股票代码/名称(如 BABA、茅台、TSLA、BTC)..." />
+        <button class="btn btn-sm" id="liveSearchBtn" style="white-space:nowrap;">🔍 全网搜</button>
+      </div>
+      <div id="liveSearchResult"></div>
       <div id="stocksList"></div>
     </div>
   </section>
@@ -297,6 +351,14 @@
       </div>
       <div id="modalContent"></div>
     </div>
+  </div>
+
+  <!-- 全屏响铃闹钟界面 -->
+  <div id="ringingOverlay">
+    <div class="ring-icon">⏰</div>
+    <h2 id="ringTitle" style="margin:16px 0 8px;">闹钟响铃中</h2>
+    <p id="ringBody" style="opacity:0.9; margin-bottom:28px;">时间到了！</p>
+    <button class="btn" id="stopRingBtn" style="background:#fff; color:#dc2626; font-size:18px; padding:14px 36px; border-radius:30px;">🔕 关闭闹钟</button>
   </div>
 
   <!-- 底部导航栏 -->
