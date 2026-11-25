@@ -1,0 +1,10 @@
+{
+  "appId": "com.personal.studyhub",
+  "appName": "学财助手",
+  "webDir": "www",
+  "plugins": {
+    "LocalNotifications": {
+      "iconColor": "#4F46E5"
+    }
+  }
+}
