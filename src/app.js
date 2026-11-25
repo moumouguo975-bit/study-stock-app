@@ -179,7 +179,6 @@ function finishNavDrag() {
 bottomNav.addEventListener('touchend', finishNavDrag, { passive: true });
 bottomNav.addEventListener('touchcancel', finishNavDrag, { passive: true });
 
-// 顶栏防下拉截断，保证上方100%跟手
 document.getElementById('topHeader').addEventListener('touchmove', (e) => {
   if (appPrefs.slideDwell !== false) e.preventDefault();
 }, { passive: false });
@@ -248,7 +247,6 @@ function startDwellOn(el, ax, ay) {
   slideBar.style.transition = 'none';
   slideBar.style.transform = 'scaleX(0)';
 
-  // 双 rAF 纯 GPU 合成层启动进度条，彻底消除 offsetWidth 强制重排
   dwellBarRaf1 = requestAnimationFrame(() => {
     dwellBarRaf1 = 0;
     dwellBarRaf2 = requestAnimationFrame(() => {
@@ -356,7 +354,6 @@ document.addEventListener('touchcancel', () => {
   dwellTarget = null;
 }, { passive: true });
 
-// 任意容器发生滚动时立即同步收起按钮吸附框，保证不漂移脱节
 document.addEventListener('scroll', () => {
   if (dwellTarget && !dwellFired) {
     cancelSlideDwell();
@@ -370,7 +367,6 @@ document.addEventListener('click', (e) => {
     e.preventDefault();
   }
 }, true);
-
 // ==================== 2. 双时区参考 + 中外双源天气 + 切地区即时建议 ====================
 const DEVICE_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai';
 let savedCities = JSON.parse(localStorage.getItem('weather_cities_v3') || '[]');
@@ -821,7 +817,6 @@ document.getElementById('testAlarmBtn').addEventListener('click', () => {
   box.querySelector('#tCal').onclick = async () => { modal.classList.remove('open'); const s = Date.now() + 600000; await syncToDeviceCalendar({ title: '学财助手日程提醒测试', location: '自习室', description: '关App依然有效', startTimeMs: s, endTimeMs: s + 1800000 }); };
   openModal('⏰ 多样提醒与设备同步测试', box);
 });
-
 // ==================== 4. 通用弹窗 & OCR智能解析 ====================
 const modal = document.getElementById('modal');
 const modalTitle = document.getElementById('modalTitle');
@@ -1196,7 +1191,6 @@ loopModeBtn.addEventListener('click', () => {
 function saveTracks() { localStorage.setItem('tracks_v4', JSON.stringify(tracks)); renderTracks(); }
 function getTrackSource(t) { return t.uri || t.localPath || t.onlineUrl || t.webUrl || ''; }
 
-// 常驻渲染：在线搜歌历史 + 在线播放历史（仅存文字与链接，0MB音频占用）
 function renderOnlineHistoryBox() {
   const box = document.getElementById('onlineMusicHistoryBox');
   if (!box) return;
@@ -1441,7 +1435,6 @@ document.getElementById('fallbackMusicInput').addEventListener('change', (e) => 
   for (const file of e.target.files) tracks.push({ id: Date.now() + Math.random(), name: file.name, format: (file.name.split('.').pop() || 'AUDIO').toUpperCase(), size: file.size, webUrl: URL.createObjectURL(file) });
   e.target.value = ''; saveTracks();
 });
-
 // ==================== 8. A股专区 + 全球股市 + 可滑动走势图 ====================
 let marketData = { updatedAt: '加载中...', globalNews: [], indices: [], stocks: [] };
 let activeRegion = 'all', activeStockMkt = 'all';
@@ -1999,4 +1992,3 @@ document.addEventListener('visibilitychange', () => {
   renderTransHistory();
   await autoSyncOnAppEnter();
 })();
-```
