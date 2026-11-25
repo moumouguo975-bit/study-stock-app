@@ -1143,4 +1143,333 @@ function mountInteractiveChart(container, history, dates, isUp) {
 }
 
 async function fetchLiveChartForRange(symbol, range, interval) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`;
+  const cData = await httpGetJson(url);
+  const r = cData.chart.result[0];
+  const meta = r.meta || {};
+  const q = r.indicators.quote[0] || {};
+  const rawCloses = q.close || [];
+  const timestamps = r.timestamp || [];
+  const history = [], dates = [];
+
+  for (let i = 0; i < rawCloses.length; i++) {
+    if (rawCloses[i] != null) {
+      history.push(Number(rawCloses[i].toFixed(2)));
+      const d = new Date((timestamps[i] || 0) * 1000);
+      const label = range === '5d'
+        ? `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+        : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      dates.push(label);
+    }
+  }
+  const price = Number((meta.regularMarketPrice || history[history.length - 1] || 0).toFixed(2));
+  const prev = Number((meta.chartPreviousClose || history[0] || price).toFixed(2));
+  const change = Number((price - prev).toFixed(2));
+  const changePct = prev ? Number(((change / prev) * 100).toFixed(2)) : 0;
+  return {
+    price, change, changePct, history, dates,
+    open: Number((q.open?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)),
+    high: Number((q.high?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)),
+    low: Number((q.low?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)),
+    volume: q.volume?.filter(v => v != null).slice(-1)[0] || 0
+  };
+}
+
+function openStockDetailModal(item) {
+  const isUp = (item.changePct || 0) >= 0;
+  const sign = isUp ? '+' : '';
+  const box = document.createElement('div');
+  const newsHtml = (item.news && item.news.length)
+    ? item.news.map(n => `
+        <a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener">
+          <div style="font-weight:500;">${n.title}</div>
+          <div class="sub-text">${n.source || '财经'} · ${n.time || ''}</div>
+        </a>`).join('')
+    : '<div class="sub-text">暂无快讯</div>';
+
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">
+      <span id="mdPrice" style="font-size:26px; font-weight:700;">${item.price ?? '--'}</span>
+      <span id="mdChg" class="${isUp ? 'up' : 'down'}" style="font-size:15px;">${sign}${item.change ?? 0} (${sign}${item.changePct ?? 0}%)</span>
+    </div>
+    <div class="day-tabs" id="rangeTabs" style="margin-bottom:6px;">
+      <button class="day-pill" data-r="5d" data-i="30m">5日分时</button>
+      <button class="day-pill active" data-r="1mo" data-i="1d">1月</button>
+      <button class="day-pill" data-r="3mo" data-i="1d">3月</button>
+      <button class="day-pill" data-r="1y" data-i="1wk">1年</button>
+    </div>
+    <div id="interactiveChartHost" style="margin-bottom:10px;"></div>
+    ${item.open ? `
+      <div class="form-grid" style="font-size:12px; background:#f8fafc; padding:10px; border-radius:8px; margin-bottom:10px;">
+        <div>今开：<strong>${item.open}</strong></div>
+        <div>成交量：<strong>${item.volume ? (item.volume / 10000).toFixed(1) + '万' : '--'}</strong></div>
+        <div>最高：<strong class="up">${item.high}</strong></div>
+        <div>最低：<strong class="down">${item.low}</strong></div>
+      </div>` : ''}
+    <div style="font-weight:600; margin-bottom:6px;">📰 每日消息汇总</div>
+    <div class="news-box">${newsHtml}</div>
+  `;
+
+  const host = box.querySelector('#interactiveChartHost');
+  mountInteractiveChart(host, item.history, item.dates, isUp);
+
+  box.querySelectorAll('#rangeTabs .day-pill').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      box.querySelectorAll('#rangeTabs .day-pill').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      host.innerHTML = '<div class="sub-text" style="padding:30px; text-align:center;">正在加载实时走势数据...</div>';
+      try {
+        const res = await fetchLiveChartForRange(item.symbol, btn.dataset.r, btn.dataset.i);
+        const upNow = res.changePct >= 0;
+        mountInteractiveChart(host, res.history, res.dates, upNow);
+      } catch (e) {
+        host.innerHTML = `<div class="sub-text" style="color:#dc2626; padding:12px;">加载该周期走势失败：${e.message}</div>`;
+      }
+    });
+  });
+
+  openModal(`${item.name} (${item.symbol})`, box);
+}
+
+function renderStocks(keyword = '') {
+  document.getElementById('stockUpdated').textContent = '更新时间：' + (marketData.updatedAt || '--');
+
+  const indices = (marketData.indices || []).filter(i => activeRegion === 'all' || i.region === activeRegion);
+  const idxGrid = document.getElementById('indicesGrid');
+  idxGrid.innerHTML = '';
+  indices.forEach(i => {
+    const isUp = (i.changePct || 0) >= 0;
+    const sign = isUp ? '+' : '';
+    const box = document.createElement('div');
+    box.className = 'idx-box';
+    box.innerHTML = `
+      <div style="font-size:12px; color:#6b7280;">${i.region} · ${i.name}</div>
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin:2px 0;">
+        <span style="font-size:15px; font-weight:700;">${i.price}</span>
+        <span class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${sign}${i.changePct}%</span>
+      </div>
+      ${renderMiniSparkline(i.history, isUp, 36)}
+    `;
+    box.onclick = () => openStockDetailModal(i);
+    idxGrid.appendChild(box);
+  });
+
+  const gnList = document.getElementById('globalNewsList');
+  const gNews = marketData.globalNews || [];
+  gnList.innerHTML = gNews.length
+    ? gNews.map(n => `
+        <a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener">
+          <div style="font-size:13px;">${n.title}</div>
+          <div class="sub-text">${n.source} · ${n.time}</div>
+        </a>`).join('')
+    : '<div class="sub-text">点击上方“刷新”获取全球头条</div>';
+
+  const allStocks = [...customWatchlist, ...(marketData.stocks || [])];
+  const kw = keyword.trim().toLowerCase();
+  const filtered = allStocks.filter(s => {
+    if (!kw) return true;
+    return (s.name || '').toLowerCase().includes(kw) ||
+      (s.symbol || '').toLowerCase().includes(kw) ||
+      (s.market || '').toLowerCase().includes(kw) ||
+      (s.summary || '').toLowerCase().includes(kw);
+  });
+
+  const list = document.getElementById('stocksList');
+  list.innerHTML = '';
+  if (!filtered.length) {
+    list.innerHTML = '<div class="sub-text" style="text-align:center; padding:12px;">本地自选未匹配，请点右边 <strong>🔍 全网搜</strong> 实时检索全球任意一只股票！</div>';
+    return;
+  }
+
+  filtered.forEach(s => {
+    const isUp = (s.changePct || 0) >= 0;
+    const sign = isUp ? '+' : '';
+    const newsItems = (s.news || []).slice(0, 4).map(n => `
+      <a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener">
+        <div>${n.title}</div>
+        <div class="sub-text">${n.source || ''} · ${n.time || ''}</div>
+      </a>`).join('');
+
+    const div = document.createElement('div');
+    div.className = 'item-row';
+    div.style.flexDirection = 'column';
+    div.innerHTML = `
+      <div style="display:flex; justify-content:space-between; width:100%; align-items:center; cursor:pointer;" class="st-head">
+        <div>
+          <strong>${s.name}</strong> <span class="badge">${s.market || '全球'}</span>
+          <div class="sub-text">${s.symbol} · 点开滑动看精确价格与时间</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:16px; font-weight:700;">${s.price}</div>
+          <div class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${sign}${s.changePct}%</div>
+        </div>
+      </div>
+      <div style="width:100%; cursor:pointer;" class="st-chart">${renderMiniSparkline(s.history, isUp, 44)}</div>
+      <div class="news-box" style="width:100%;">
+        <div style="font-weight:600; margin-bottom:4px;">📰 每日消息汇总 (${(s.news || []).length}条)</div>
+        ${newsItems || '<div class="sub-text">暂无快讯</div>'}
+      </div>
+    `;
+    div.querySelector('.st-head').onclick = () => openStockDetailModal(s);
+    div.querySelector('.st-chart').onclick = () => openStockDetailModal(s);
+    list.appendChild(div);
+  });
+}
+
+// 东方财富 + Yahoo Finance 双引擎全网任意搜股（支持中文、A股/港股/美股/欧日/加密货币）
+function mapEastMoneyToYahooSymbol(item) {
+  const code = String(item.Code || '');
+  const mkt = String(item.MktNum || '');
+  if (mkt === '1') return `${code}.SS`;
+  if (mkt === '0') return `${code}.SZ`;
+  if (mkt === '116') {
+    const clean = code.length === 5 && code.startsWith('0') ? code.slice(1) : code.padStart(4, '0');
+    return `${clean}.HK`;
+  }
+  return code;
+}
+
+async function liveSearchGlobalStock(query) {
+  const q = query.trim();
+  const resBox = document.getElementById('liveSearchResult');
+  if (!q) { resBox.innerHTML = ''; return; }
+  resBox.innerHTML = '<div class="card" style="background:#eef2ff;">🔍 正在通过全球双引擎检索所有交易所个股...</div>';
+
+  const candidates = [];
+  const seen = new Set();
+  const pushCand = (c) => {
+    if (!c.symbol || seen.has(c.symbol.toUpperCase())) return;
+    seen.add(c.symbol.toUpperCase());
+    candidates.push(c);
+  };
+
+  // 引擎1：东方财富（对中文名、A股、港股、中概股极其精准）
+  try {
+    const emUrl = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=6`;
+    const emData = await httpGetJson(emUrl);
+    const rows = emData?.QuotationCodeTable?.Data || [];
+    rows.forEach(r => {
+      pushCand({
+        symbol: mapEastMoneyToYahooSymbol(r),
+        name: r.Name || r.Code,
+        market: r.SecurityTypeName || '全球'
+      });
+    });
+  } catch {}
+
+  // 引擎2：Yahoo Finance（全球美/欧/日/印/加密全覆盖）
+  try {
+    const yfUrl = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=6&newsCount=3`;
+    const yfData = await httpGetJson(yfUrl);
+    (yfData.quotes || []).forEach(qt => {
+      if (qt.symbol) {
+        pushCand({
+          symbol: qt.symbol,
+          name: qt.shortname || qt.longname || qt.symbol,
+          market: qt.exchDisp || qt.exchange || '全球'
+        });
+      }
+    });
+  } catch {}
+
+  if (!candidates.length) {
+    resBox.innerHTML = '<div class="sub-text" style="padding:8px;">全网未找到匹配股票，请检查拼写或直接输入代码（如 600519、0700、AAPL、TSLA）。</div>';
+    return;
+  }
+
+  resBox.innerHTML = '<div class="sub-text" style="margin-bottom:6px;">🌐 全网检索到以下股票（点击查看实时可滑动态势图与每日新闻）：</div>';
+  candidates.slice(0, 8).forEach(cand => {
+    const row = document.createElement('div');
+    row.className = 'card';
+    row.style.cssText = 'padding:10px; margin-bottom:8px; border:1px solid #c7d2fe; background:#f5f7ff; cursor:pointer;';
+    row.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <strong>${cand.name}</strong>
+          <div class="sub-text">${cand.symbol} · ${cand.market}</div>
+        </div>
+        <button class="btn btn-sm">看态势图</button>
+      </div>
+    `;
+    row.onclick = async () => {
+      row.querySelector('button').textContent = '加载中...';
+      try {
+        const chartInfo = await fetchLiveChartForRange(cand.symbol, '1mo', '1d');
+        let newsList = [];
+        try {
+          const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(cand.name + ' ' + cand.symbol + ' 股价 新闻')}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`;
+          const xmlText = await httpGetText(rssUrl);
+          const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+          newsList = Array.from(doc.querySelectorAll('item')).slice(0, 6).map(it => ({
+            title: it.querySelector('title')?.textContent || '',
+            source: it.querySelector('source')?.textContent || '财经资讯',
+            time: (it.querySelector('pubDate')?.textContent || '').slice(0, 22),
+            link: it.querySelector('link')?.textContent || '#'
+          }));
+        } catch {}
+
+        const fullStock = { ...cand, ...chartInfo, news: newsList };
+        openStockDetailModal(fullStock);
+        customWatchlist = [fullStock, ...customWatchlist.filter(x => x.symbol !== fullStock.symbol)].slice(0, 12);
+        localStorage.setItem('custom_watchlist_v1', JSON.stringify(customWatchlist));
+        renderStocks('');
+      } catch (err) {
+        alert('拉取实时走势失败：' + err.message);
+      } finally {
+        row.querySelector('button').textContent = '看态势图';
+      }
+    };
+    resBox.appendChild(row);
+  });
+}
+
+async function fetchMarketData() {
+  const repo = localStorage.getItem('github_stock_repo') || DEFAULT_GITHUB_REPO;
+  document.getElementById('stockUpdated').textContent = `正在同步 ${repo} 全球股市...`;
+  try {
+    const url = `https://raw.githubusercontent.com/${repo}/main/data/market_data.json?t=${Date.now()}`;
+    marketData = await httpGetJson(url);
+    localStorage.setItem('cached_market_v3', JSON.stringify(marketData));
+  } catch (e) {
+    const cached = localStorage.getItem('cached_market_v3');
+    if (cached) marketData = JSON.parse(cached);
+    document.getElementById('stockUpdated').textContent = '同步失败（请确认网络畅通）：' + e.message;
+  }
+  renderStocks(document.getElementById('stockSearch').value);
+}
+
+document.querySelectorAll('#regionTabs .day-pill').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#regionTabs .day-pill').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeRegion = btn.dataset.region;
+    renderStocks(document.getElementById('stockSearch').value);
+  });
+});
+document.getElementById('refreshStocksBtn').addEventListener('click', fetchMarketData);
+document.getElementById('stockSearch').addEventListener('input', (e) => renderStocks(e.target.value));
+document.getElementById('stockSearch').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') liveSearchGlobalStock(e.target.value);
+});
+document.getElementById('liveSearchBtn').addEventListener('click', () => {
+  liveSearchGlobalStock(document.getElementById('stockSearch').value);
+});
+document.getElementById('configRepoBtn').addEventListener('click', () => {
+  const cur = localStorage.getItem('github_stock_repo') || DEFAULT_GITHUB_REPO;
+  const val = prompt('GitHub 股市数据仓库（格式：用户名/仓库名）：', cur);
+  if (val !== null && val.trim()) {
+    localStorage.setItem('github_stock_repo', val.trim());
+    fetchMarketData();
+  }
+});
+
+// ==================== 启动初始化 ====================
+(async function bootstrap() {
+  await initNotificationChannels();
+  renderDayTabs();
+  renderCourses();
+  renderExams();
+  renderFiles();
+  renderTracks();
+  fetchMarketData();
+})();
