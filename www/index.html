@@ -20,7 +20,6 @@
       --app-size: 14px;
     }
 
-    /* 深色模式 */
     body.dark-mode {
       --bg: #0f172a;
       --card: #1e293b;
@@ -31,7 +30,6 @@
       --primary-light: rgba(99, 102, 241, 0.22);
     }
 
-    /* 全局毛玻璃拟态模式 */
     body.glass-mode {
       background: linear-gradient(135deg, #e0e7ff 0%, #f3e8ff 50%, #dbeafe 100%) fixed;
     }
@@ -59,6 +57,7 @@
     }
 
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { overscroll-behavior-y: contain; }
     body {
       margin: 0;
       font-family: var(--app-font);
@@ -68,17 +67,24 @@
       padding-bottom: 78px;
       transition: background 0.25s, color 0.25s;
     }
+
+    /* 顶栏禁用系统下拉手势，确保上方滑动毛玻璃100%跟手 */
     header {
       position: sticky; top: 0; z-index: 20;
       background: var(--primary); color: #fff;
       padding: 13px 14px; display: flex; justify-content: space-between; align-items: center; gap: 6px;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
     }
     header h1 { margin: 0; font-size: 17px; font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .hdr-btn {
       background: rgba(255, 255, 255, 0.22); border: none; color: #fff;
-      padding: 6px 9px; border-radius: 8px; font-size: 12px; cursor: pointer; white-space: nowrap;
+      padding: 6px 10px; border-radius: 8px; font-size: 12px; cursor: pointer; white-space: nowrap;
+      touch-action: none;
     }
+
     .page { display: none; padding: 12px; max-width: 720px; margin: 0 auto; }
     .page.active { display: block; }
     .card {
@@ -188,7 +194,14 @@
     .chart-interactive { position: relative; width: 100%; touch-action: none; user-select: none; background: var(--card-sub); border-radius: 8px; padding: 6px; border: 1px solid var(--border); }
     .scrub-bar { display: flex; justify-content: space-between; align-items: center; font-size: 12px; background: var(--primary-light); color: var(--text); padding: 6px 10px; border-radius: 8px; margin-bottom: 6px; font-weight: 500; }
 
-    /* 音乐与音效 */
+    /* 音乐、历史记录与音效 */
+    .music-hist-box {
+      background: var(--card-sub);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+    }
     .ambient-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .ambient-btn { padding: 12px 8px; border-radius: 12px; border: 1px solid var(--border); background: var(--card-sub); color: var(--text); font-size: 13px; text-align: center; cursor: pointer; }
     .ambient-btn.playing { background: var(--primary-light); border-color: var(--primary); color: var(--primary); font-weight: 600; }
@@ -246,37 +259,69 @@
     .ring-icon { font-size: 72px; animation: shake 0.4s infinite; }
     @keyframes shake { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-16deg)} 75%{transform:rotate(16deg)} }
 
-    /* 全页面滑动跟随毛玻璃光晕 + 0.85秒停顿充能条 */
+    /* 60fps 零延迟跟手毛玻璃光球（随时跟随指尖，不掉帧） */
+    #fingerGlassOrb {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 58px;
+      height: 58px;
+      margin-left: -29px;
+      margin-top: -29px;
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 949;
+      opacity: 0;
+      background: radial-gradient(circle, rgba(255, 255, 255, 0.5) 0%, rgba(99, 102, 241, 0.16) 68%, transparent 100%);
+      backdrop-filter: blur(8px) saturate(170%);
+      -webkit-backdrop-filter: blur(8px) saturate(170%);
+      border: 1.5px solid rgba(255, 255, 255, 0.72);
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.16);
+      will-change: transform, opacity;
+      transition: opacity 0.1s ease;
+    }
+    #fingerGlassOrb.visible { opacity: 1; }
+
+    /* 吸附到按钮上的毛玻璃光晕 + 0.85s 充能条（用 GPU transform 瞬时跟手） */
     #slideGlassLens {
       position: fixed;
+      left: 0;
+      top: 0;
       pointer-events: none;
       z-index: 950;
       opacity: 0;
       border-radius: 12px;
-      background: rgba(255, 255, 255, 0.28);
-      backdrop-filter: blur(10px) saturate(160%);
-      -webkit-backdrop-filter: blur(10px) saturate(160%);
-      border: 1.5px solid rgba(255, 255, 255, 0.78);
-      box-shadow: 0 6px 20px rgba(79, 70, 229, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+      background: rgba(255, 255, 255, 0.30);
+      backdrop-filter: blur(10px) saturate(170%);
+      -webkit-backdrop-filter: blur(10px) saturate(170%);
+      border: 1.5px solid rgba(255, 255, 255, 0.85);
+      box-shadow: 0 6px 22px rgba(79, 70, 229, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.7);
       overflow: hidden;
-      transition: left 0.08s ease-out, top 0.08s ease-out, width 0.08s ease-out, height 0.08s ease-out, opacity 0.14s ease;
+      will-change: transform, width, height, opacity;
+      transition: opacity 0.1s ease;
     }
     body.dark-mode #slideGlassLens {
-      background: rgba(148, 163, 184, 0.24);
-      border-color: rgba(255, 255, 255, 0.45);
+      background: rgba(148, 163, 184, 0.28);
+      border-color: rgba(255, 255, 255, 0.55);
     }
     #slideGlassLens.visible { opacity: 1; }
+    #slideGlassLens.fired {
+      background: rgba(79, 70, 229, 0.38);
+      border-color: #38bdf8;
+    }
     #slideGlassBar {
       position: absolute;
-      left: 0; bottom: 0; height: 4px; width: 0%;
+      left: 0;
+      bottom: 0;
+      height: 4px;
+      width: 0%;
       background: linear-gradient(90deg, var(--primary), #38bdf8);
       border-radius: 0 4px 4px 0;
     }
 
-    /* 轻量提示吐司 */
     #toastTip {
       position: fixed; left: 50%; bottom: 82px; transform: translateX(-50%);
-      z-index: 960; background: rgba(17, 24, 39, 0.85); color: #fff;
+      z-index: 960; background: rgba(17, 24, 39, 0.86); color: #fff;
       padding: 6px 14px; border-radius: 20px; font-size: 12px;
       pointer-events: none; opacity: 0; transition: opacity 0.2s;
       backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
@@ -284,7 +329,7 @@
     }
     #toastTip.show { opacity: 1; }
 
-    /* 底部 6 栏导航（带液态毛玻璃滑动胶囊） */
+    /* 底部 6 栏导航（液态毛玻璃滑动胶囊） */
     nav {
       position: fixed; bottom: 0; left: 0; right: 0; height: 66px;
       background: var(--card); border-top: 1px solid var(--border);
@@ -303,7 +348,7 @@
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
       pointer-events: none;
       z-index: 0;
-      transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+      transition: transform 0.14s cubic-bezier(0.22, 1, 0.36, 1);
     }
     body.dark-mode #navGlassIndicator {
       background: color-mix(in srgb, var(--primary) 30%, rgba(30, 41, 59, 0.45));
@@ -321,13 +366,13 @@
   </style>
 </head>
 <body>
-  <header>
+  <header id="topHeader">
     <h1 id="headerTitle">📅 智能课表</h1>
     <button class="hdr-btn" id="openSettingsBtn">🎨 设置</button>
     <button class="hdr-btn" id="testAlarmBtn">⏰ 闹钟</button>
   </header>
 
-  <!-- 1. 课表 + 双时区自动时钟 / 24h逐时 & 7天滑动天气 / 智能建议 -->
+  <!-- 1. 课表 + 双时区时钟 / 互动天气 -->
   <section id="page-schedule" class="page active">
     <div class="dash-card">
       <div class="dash-head-bar">
@@ -335,7 +380,6 @@
         <button class="city-pill" id="refreshWeatherBtn" style="flex-shrink:0;">🔄 刷新</button>
       </div>
 
-      <!-- 设备与网络时区不一致时，同时展示双时区实时对比 -->
       <div class="dual-tz-bar" id="dualTzBar"></div>
 
       <div class="dash-top">
@@ -476,6 +520,8 @@
         <input id="onlineMusicQuery" placeholder="搜歌名/歌手 (如 李玉刚 刚好遇见你、周杰伦)..." />
         <button class="btn btn-sm" id="searchOnlineMusicBtn" style="white-space:nowrap;">🔍 搜歌</button>
       </div>
+      <!-- 常驻独立历史区：在线搜歌历史 + 在线播放历史（仅存文字记录，0MB音频占用） -->
+      <div id="onlineMusicHistoryBox" class="music-hist-box"></div>
       <div id="onlineMusicResults"></div>
     </div>
 
@@ -739,11 +785,12 @@
     <button class="btn" id="stopRingBtn" style="background:#fff; color:#dc2626; font-size:18px; padding:14px 36px; border-radius:30px;">🔕 关闭闹钟</button>
   </div>
 
-  <!-- 全页面滑动毛玻璃光晕 + 0.85s 进度条 -->
+  <!-- 指尖60fps跟手毛玻璃光球 + 按钮吸附毛玻璃框(0.85s进度条) -->
+  <div id="fingerGlassOrb"></div>
   <div id="slideGlassLens"><div id="slideGlassBar"></div></div>
   <div id="toastTip"></div>
 
-  <!-- 底部 6 栏导航（带液态毛玻璃滑动胶囊） -->
+  <!-- 底部 6 栏导航 -->
   <nav id="bottomNav">
     <div id="navGlassIndicator"></div>
     <button class="active" data-idx="0" data-tab="schedule" data-title="📅 智能课表"><span class="ico">📅</span>课表</button>
