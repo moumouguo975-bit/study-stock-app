@@ -26,6 +26,41 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-android-${{ hashFiles('package.json', '.github/workflows/build_android_apk.yml') }}
+          restore-keys: |
+            gradle-android-
+
+      - name: Configure Google Maven Central Mirror (Fix HTTP 429)
+        run: |
+          mkdir -p ~/.gradle/init.d
+          cat << 'EOF' > ~/.gradle/init.d/maven-mirror.gradle
+          def mirrorUrl = 'https://maven-central.storage-download.googleapis.com/maven2/'
+          def redirectRepos = { repos ->
+              repos.all { repo ->
+                  if (repo instanceof MavenArtifactRepository) {
+                      def u = repo.url.toString()
+                      if (u.startsWith('https://repo.maven.apache.org/maven2') || u.startsWith('https://repo1.maven.org/maven2')) {
+                          repo.url = uri(mirrorUrl)
+                      }
+                  }
+              }
+          }
+          settingsEvaluated { settings ->
+              redirectRepos(settings.pluginManagement.repositories)
+              redirectRepos(settings.dependencyResolutionManagement.repositories)
+          }
+          allprojects { proj ->
+              redirectRepos(proj.buildscript.repositories)
+              redirectRepos(proj.repositories)
+          }
+          EOF
+
       - name: Install dependencies & bundle JS
         run: |
           npm install
@@ -766,7 +801,6 @@ jobs:
                       call.resolve();
                   }
 
-                  // 双模 OCR：mode="local" 时直接用本机 RapidOCR（Umi-OCR 同源引擎）离线识别；mode="remote" 返回 Base64 供远程 Umi-OCR 识别
                   @PluginMethod
                   public void extractText(PluginCall call) {
                       String path = call.getString("localPath", "");
@@ -796,7 +830,6 @@ jobs:
                                   JSObject ret = new JSObject(); ret.put("needsOcr", true); ret.put("images", imgs); call.resolve(ret); return;
                               }
 
-                              // 本机离线 RapidOCR（Umi-OCR 同源引擎）直接识别图片或 PDF
                               RapidOCR ocr = getOrInitRapidOcr();
                               if (lower.endsWith(".pdf")) {
                                   String pdfText = runLocalOcrOnPdf(ocr, file, Math.max(1, Math.min(10, maxPages)));
@@ -971,7 +1004,7 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
