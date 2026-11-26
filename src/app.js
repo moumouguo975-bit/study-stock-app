@@ -1,5 +1,9 @@
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import CryptoJS from 'crypto-js';
+import dayjs from 'dayjs';
+import he from 'he';
+import qs from 'qs';
 
 const NativeTools = registerPlugin('NativeTools');
 const DEFAULT_GITHUB_REPO = 'moumouguo975-bit/study-stock-app';
@@ -8,7 +12,7 @@ const RRULE_DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
 // ==================== 通用工具 ====================
 let toastTimer = null;
-function showToast(msg, duration = 2000) {
+function showToast(msg, duration = 2200) {
   const el = document.getElementById('toastTip');
   if (!el) return;
   el.textContent = msg;
@@ -27,7 +31,7 @@ async function httpGetJson(url, extraHeaders = {}) {
 }
 
 async function httpGetText(url, extraHeaders = {}) {
-  const headers = { 'User-Agent': 'Mozilla/5.0', ...extraHeaders };
+  const headers = { 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36', ...extraHeaders };
   if (Capacitor.isNativePlatform()) {
     const res = await CapacitorHttp.get({ url, headers });
     return typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
@@ -35,7 +39,19 @@ async function httpGetText(url, extraHeaders = {}) {
   return await (await fetch(url)).text();
 }
 
-// ==================== 0. 个性化外观设置 ====================
+async function httpPostJson(url, payload, extraHeaders = {}) {
+  const headers = { 'Content-Type': 'application/json', ...extraHeaders };
+  if (Capacitor.isNativePlatform()) {
+    const res = await CapacitorHttp.post({ url, headers, data: payload });
+    if (res.status >= 400) throw new Error(`HTTP ${res.status}`);
+    return typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+  }
+  const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return await resp.json();
+}
+
+// ==================== 0. 个性化外观与 Umi-OCR 设置 ====================
 const FONT_MAP = {
   system: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   serif: '"Noto Serif SC", "Songti SC", Georgia, serif',
@@ -46,11 +62,35 @@ const FONT_MAP = {
 let appPrefs = JSON.parse(localStorage.getItem('app_prefs_v2') || 'null') || {
   color: '#4f46e5', darkMode: 'system', glass: true, slideDwell: true, fontFamily: 'system', fontSize: '14px'
 };
+let umiOcrConfig = JSON.parse(localStorage.getItem('umi_ocr_cfg_v1') || 'null') || {
+  serverUrl: 'http://127.0.0.1:1224',
+  parser: 'multi_para',
+  maxPages: 3
+};
 const darkMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
 
 function hexToSoftBg(hex) {
   const c = (hex || '#4f46e5').replace('#', '');
   return `rgba(${parseInt(c.slice(0, 2), 16) || 79}, ${parseInt(c.slice(2, 4), 16) || 70}, ${parseInt(c.slice(4, 6), 16) || 229}, 0.14)`;
+}
+
+function syncUmiConfigToSettingsUI() {
+  const u = document.getElementById('umiServerUrlInput');
+  const p = document.getElementById('umiParserSelect');
+  const m = document.getElementById('umiMaxPagesSelect');
+  if (u) u.value = umiOcrConfig.serverUrl || 'http://127.0.0.1:1224';
+  if (p) p.value = umiOcrConfig.parser || 'multi_para';
+  if (m) m.value = String(umiOcrConfig.maxPages || 3);
+}
+
+function saveUmiConfigFromUI() {
+  const rawUrl = (document.getElementById('umiServerUrlInput')?.value || '').trim().replace(/\/+$/, '');
+  umiOcrConfig = {
+    serverUrl: rawUrl || 'http://127.0.0.1:1224',
+    parser: document.getElementById('umiParserSelect')?.value || 'multi_para',
+    maxPages: Number(document.getElementById('umiMaxPagesSelect')?.value || 3)
+  };
+  localStorage.setItem('umi_ocr_cfg_v1', JSON.stringify(umiOcrConfig));
 }
 
 function applyAppearance() {
@@ -73,6 +113,7 @@ function applyAppearance() {
   document.querySelectorAll('#colorSwatches .swatch').forEach(s => {
     s.classList.toggle('active', s.dataset.color.toLowerCase() === (appPrefs.color || '').toLowerCase());
   });
+  syncUmiConfigToSettingsUI();
 }
 
 function savePrefs() {
@@ -83,8 +124,8 @@ function savePrefs() {
 darkMediaQuery.addEventListener?.('change', applyAppearance);
 const settingsModal = document.getElementById('settingsModal');
 document.getElementById('openSettingsBtn').addEventListener('click', () => { applyAppearance(); settingsModal.classList.add('open'); });
-document.getElementById('closeSettingsBtn').addEventListener('click', () => settingsModal.classList.remove('open'));
-settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) settingsModal.classList.remove('open'); });
+document.getElementById('closeSettingsBtn').addEventListener('click', () => { saveUmiConfigFromUI(); settingsModal.classList.remove('open'); });
+settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) { saveUmiConfigFromUI(); settingsModal.classList.remove('open'); } });
 document.querySelectorAll('#colorSwatches .swatch').forEach(s => s.addEventListener('click', () => { appPrefs.color = s.dataset.color; savePrefs(); }));
 document.getElementById('customColorPicker').addEventListener('input', (e) => { appPrefs.color = e.target.value; savePrefs(); });
 document.getElementById('darkModeSelect').addEventListener('change', (e) => { appPrefs.darkMode = e.target.value; savePrefs(); });
@@ -93,29 +134,43 @@ document.getElementById('slideDwellToggle').addEventListener('change', (e) => { 
 document.getElementById('fontFamilySelect').addEventListener('change', (e) => { appPrefs.fontFamily = e.target.value; savePrefs(); });
 document.getElementById('fontSizeSelect').addEventListener('change', (e) => { appPrefs.fontSize = e.target.value; savePrefs(); });
 
-// ==================== 1. 底部连续跟手液态毛玻璃 + 全局GPU跟手光球 & 0.85秒停顿自动打开 ====================
+document.getElementById('saveUmiConfigBtn').addEventListener('click', () => {
+  saveUmiConfigFromUI();
+  document.getElementById('umiStatusHint').textContent = `✅ 已保存：${umiOcrConfig.serverUrl}`;
+  showToast('✅ Umi-OCR 配置已保存');
+});
+document.getElementById('testUmiConfigBtn').addEventListener('click', async () => {
+  saveUmiConfigFromUI();
+  const hint = document.getElementById('umiStatusHint');
+  hint.textContent = `🔌 正在连接 ${umiOcrConfig.serverUrl}/api/ocr/get_options ...`;
+  try {
+    const res = await httpGetJson(`${umiOcrConfig.serverUrl}/api/ocr/get_options`);
+    const keys = res && typeof res === 'object' ? Object.keys(res).length : 0;
+    hint.textContent = `✅ Umi-OCR 连接成功！检测到 ${keys} 项引擎参数。`;
+    showToast('✅ Umi-OCR 服务连接成功');
+  } catch (e) {
+    hint.textContent = `❌ 连接失败：${e.message}（请确认 Umi-OCR 已开启 HTTP 服务）`;
+    showToast('❌ Umi-OCR 无法连接');
+  }
+});
+
+// ==================== 1. 底栏液态毛玻璃 + 原位按钮透明毛玻璃触控（无小球、100%跟手） ====================
 const bottomNav = document.getElementById('bottomNav');
 const navIndicator = document.getElementById('navGlassIndicator');
 const navBtns = Array.from(bottomNav.querySelectorAll('button'));
-let currentTabIdx = 0;
-let navDragging = false;
-let navDragRaf = 0;
-let navPendingClientX = 0;
+let currentTabIdx = 0, navDragging = false, navDragRaf = 0, navPendingClientX = 0;
 
 function updateNavIndicatorPosition(idx) {
   const tabW = bottomNav.clientWidth / navBtns.length;
   navIndicator.style.transform = `translate3d(${idx * tabW}px, 0, 0) scale(1)`;
 }
-
 function setNavIndicatorDragX(clientX) {
   const rect = bottomNav.getBoundingClientRect();
   if (!rect.width) return;
   const tabW = rect.width / navBtns.length;
-  const rawX = clientX - rect.left - tabW / 2;
-  const clampedX = Math.max(0, Math.min(rect.width - tabW, rawX));
+  const clampedX = Math.max(0, Math.min(rect.width - tabW, clientX - rect.left - tabW / 2));
   navIndicator.style.transform = `translate3d(${clampedX.toFixed(2)}px, 0, 0) scale(1.05)`;
 }
-
 function switchTabByIndex(idx, withHaptic = false, snapIndicator = true) {
   if (idx < 0 || idx >= navBtns.length) return;
   const changed = idx !== currentTabIdx;
@@ -129,11 +184,7 @@ function switchTabByIndex(idx, withHaptic = false, snapIndicator = true) {
   if (snapIndicator) updateNavIndicatorPosition(idx);
   if (changed && withHaptic && navigator.vibrate) navigator.vibrate(10);
 }
-
-window.addEventListener('resize', () => {
-  if (!navDragging) updateNavIndicatorPosition(currentTabIdx);
-});
-
+window.addEventListener('resize', () => { if (!navDragging) updateNavIndicatorPosition(currentTabIdx); });
 function handleNavSlideAt(clientX) {
   const rect = bottomNav.getBoundingClientRect();
   if (!rect.width) return;
@@ -141,240 +192,97 @@ function handleNavSlideAt(clientX) {
   setNavIndicatorDragX(clientX);
   switchTabByIndex(idx, true, false);
 }
-
 navBtns.forEach((btn, idx) => btn.addEventListener('click', () => {
-  navDragging = false;
-  navIndicator.classList.remove('dragging');
-  switchTabByIndex(idx, false, true);
+  navDragging = false; navIndicator.classList.remove('dragging'); switchTabByIndex(idx, false, true);
 }));
-
 bottomNav.addEventListener('touchstart', (e) => {
-  const t = e.touches[0];
-  if (!t) return;
-  navDragging = true;
-  navPendingClientX = t.clientX;
-  navIndicator.classList.add('dragging');
-  handleNavSlideAt(t.clientX);
+  const t = e.touches[0]; if (!t) return;
+  navDragging = true; navPendingClientX = t.clientX; navIndicator.classList.add('dragging'); handleNavSlideAt(t.clientX);
 }, { passive: true });
-
 bottomNav.addEventListener('touchmove', (e) => {
-  const t = e.touches[0];
-  if (!t) return;
-  e.preventDefault();
-  navPendingClientX = t.clientX;
-  if (!navDragRaf) {
-    navDragRaf = requestAnimationFrame(() => {
-      navDragRaf = 0;
-      if (navDragging) handleNavSlideAt(navPendingClientX);
-    });
-  }
+  const t = e.touches[0]; if (!t) return;
+  e.preventDefault(); navPendingClientX = t.clientX;
+  if (!navDragRaf) { navDragRaf = requestAnimationFrame(() => { navDragRaf = 0; if (navDragging) handleNavSlideAt(navPendingClientX); }); }
 }, { passive: false });
-
 function finishNavDrag() {
   if (navDragRaf) { cancelAnimationFrame(navDragRaf); navDragRaf = 0; }
-  navDragging = false;
-  navIndicator.classList.remove('dragging');
-  updateNavIndicatorPosition(currentTabIdx);
+  navDragging = false; navIndicator.classList.remove('dragging'); updateNavIndicatorPosition(currentTabIdx);
 }
 bottomNav.addEventListener('touchend', finishNavDrag, { passive: true });
 bottomNav.addEventListener('touchcancel', finishNavDrag, { passive: true });
 
-document.getElementById('topHeader').addEventListener('touchmove', (e) => {
-  if (appPrefs.slideDwell !== false) e.preventDefault();
-}, { passive: false });
-
-const fingerOrb = document.getElementById('fingerGlassOrb');
-const slideLens = document.getElementById('slideGlassLens');
-const slideBar = document.getElementById('slideGlassBar');
+// 顶栏及页面交互按钮：点击即变透明毛玻璃，滑动到哪个按钮哪个按钮立刻变透明，无悬浮光球
 const INTERACTIVE_SEL = [
   'button:not(#bottomNav button)', '.day-pill', '.city-pill', '.eq-pill',
   '.ambient-btn', '.idx-box', '.hour-chip', '.day-chip', '.phrase-chip',
-  '.swatch', '.play-track', '.st-head', '.open-trigger', '.tap-word'
+  '.swatch', '.play-track', '.st-head', '.open-trigger'
 ].join(', ');
 
-let dwellTarget = null;
-let dwellTimer = null;
-let dwellBarRaf1 = 0;
-let dwellBarRaf2 = 0;
-let dwellFired = false;
-let isProgrammaticDwellClick = false;
-let suppressClickUntil = 0;
-let dwellAnchorX = 0;
-let dwellAnchorY = 0;
+let glassActiveEl = null, glassStartEl = null, glassStartInHeader = false;
+let glassTouchStartScrollY = 0, glassSlideMoved = false, glassSuppressClickUntil = 0;
 
-let orbActive = false;
-let orbRafId = 0;
-let orbX = -120;
-let orbY = -120;
-let touchStartScrollY = 0;
-let lastHitCheckX = -999;
-let lastHitCheckY = -999;
-
-function hideFingerOrb() {
-  orbActive = false;
-  if (orbRafId) { cancelAnimationFrame(orbRafId); orbRafId = 0; }
-  fingerOrb.classList.remove('visible');
-}
-
-function positionSlideLens(el) {
-  const r = el.getBoundingClientRect();
-  if (!r.width || !r.height) return;
-  const pad = 3;
-  slideLens.style.transform = `translate3d(${(r.left - pad).toFixed(1)}px, ${(r.top - pad).toFixed(1)}px, 0)`;
-  slideLens.style.width = `${(r.width + pad * 2).toFixed(1)}px`;
-  slideLens.style.height = `${(r.height + pad * 2).toFixed(1)}px`;
-  slideLens.classList.add('visible');
-}
-
-function cancelSlideDwell() {
-  if (dwellTimer) { clearTimeout(dwellTimer); dwellTimer = null; }
-  if (dwellBarRaf1) { cancelAnimationFrame(dwellBarRaf1); dwellBarRaf1 = 0; }
-  if (dwellBarRaf2) { cancelAnimationFrame(dwellBarRaf2); dwellBarRaf2 = 0; }
-  slideLens.classList.remove('visible', 'fired');
-  slideBar.style.transition = 'none';
-  slideBar.style.transform = 'scaleX(0)';
-}
-
-function startDwellOn(el, ax, ay) {
-  if (dwellTimer) { clearTimeout(dwellTimer); dwellTimer = null; }
-  if (dwellBarRaf1) { cancelAnimationFrame(dwellBarRaf1); dwellBarRaf1 = 0; }
-  if (dwellBarRaf2) { cancelAnimationFrame(dwellBarRaf2); dwellBarRaf2 = 0; }
-  dwellTarget = el;
-  dwellAnchorX = ax;
-  dwellAnchorY = ay;
-  positionSlideLens(el);
-  slideLens.classList.remove('fired');
-  slideBar.style.transition = 'none';
-  slideBar.style.transform = 'scaleX(0)';
-
-  dwellBarRaf1 = requestAnimationFrame(() => {
-    dwellBarRaf1 = 0;
-    dwellBarRaf2 = requestAnimationFrame(() => {
-      dwellBarRaf2 = 0;
-      if (dwellTarget !== el || dwellFired) return;
-      slideBar.style.transition = 'transform 850ms linear';
-      slideBar.style.transform = 'scaleX(1)';
-    });
-  });
-
-  dwellTimer = setTimeout(() => {
-    dwellTimer = null;
-    if (dwellTarget !== el) return;
-    dwellFired = true;
-    slideLens.classList.add('fired');
-    if (navigator.vibrate) navigator.vibrate(25);
-
-    isProgrammaticDwellClick = true;
-    try {
-      if (el.classList.contains('tap-word')) jumpTranslateWord(el);
-      else el.click();
-    } finally {
-      isProgrammaticDwellClick = false;
-    }
-
-    suppressClickUntil = Date.now() + 450;
-    setTimeout(() => {
-      cancelSlideDwell();
-      hideFingerOrb();
-    }, 150);
-  }, 850);
-}
-
-function flushOrbFrame() {
-  orbRafId = 0;
-  if (!orbActive) return;
-  fingerOrb.style.transform = `translate3d(${orbX.toFixed(1)}px, ${orbY.toFixed(1)}px, 0)`;
-  fingerOrb.classList.add('visible');
-
-  if (dwellFired) return;
-  if (Math.abs(window.scrollY - touchStartScrollY) > 8) {
-    if (dwellTarget) { cancelSlideDwell(); dwellTarget = null; }
-    return;
-  }
-
-  if (Math.hypot(orbX - lastHitCheckX, orbY - lastHitCheckY) >= 2 || !dwellTarget) {
-    lastHitCheckX = orbX;
-    lastHitCheckY = orbY;
-    const hit = document.elementFromPoint(orbX, orbY);
-    const el = hit ? hit.closest(INTERACTIVE_SEL) : null;
-    if (!el) {
-      if (dwellTarget) { cancelSlideDwell(); dwellTarget = null; }
-    } else if (el !== dwellTarget) {
-      startDwellOn(el, orbX, orbY);
-    } else if (Math.hypot(orbX - dwellAnchorX, orbY - dwellAnchorY) > 22) {
-      startDwellOn(el, orbX, orbY);
-    }
+function setGlassTouchActive(el) {
+  if (glassActiveEl === el) return;
+  if (glassActiveEl) glassActiveEl.classList.remove('glass-touch-active');
+  glassActiveEl = el || null;
+  if (glassActiveEl) {
+    glassActiveEl.classList.add('glass-touch-active');
+    if (glassSlideMoved && navigator.vibrate) navigator.vibrate(6);
   }
 }
-
-function scheduleOrbFrame() {
-  if (!orbRafId) orbRafId = requestAnimationFrame(flushOrbFrame);
+function clearGlassTouchActive() {
+  if (glassActiveEl) glassActiveEl.classList.remove('glass-touch-active');
+  glassActiveEl = null; glassStartEl = null; glassStartInHeader = false; glassSlideMoved = false;
 }
-
+document.getElementById('topHeader').addEventListener('touchmove', (e) => {
+  if (appPrefs.slideDwell !== false) e.preventDefault();
+}, { passive: false });
 document.addEventListener('touchstart', (e) => {
   if (appPrefs.slideDwell === false) return;
   if (e.target.closest('#bottomNav') || e.target.closest('input, textarea, select')) return;
-  const t = e.touches[0];
-  if (!t) return;
-  dwellFired = false;
-  orbActive = true;
-  orbX = t.clientX;
-  orbY = t.clientY;
-  touchStartScrollY = window.scrollY;
-  lastHitCheckX = orbX;
-  lastHitCheckY = orbY;
-
-  fingerOrb.style.transform = `translate3d(${orbX.toFixed(1)}px, ${orbY.toFixed(1)}px, 0)`;
-  fingerOrb.classList.add('visible');
-
+  const t = e.touches[0]; if (!t) return;
+  glassTouchStartScrollY = window.scrollY;
+  glassSlideMoved = false;
+  glassStartInHeader = !!(e.target instanceof Element && e.target.closest('#topHeader'));
   const el = e.target instanceof Element ? e.target.closest(INTERACTIVE_SEL) : null;
-  if (el) startDwellOn(el, orbX, orbY);
-  else { cancelSlideDwell(); dwellTarget = null; }
+  glassStartEl = el;
+  setGlassTouchActive(el);
 }, { passive: true });
-
 document.addEventListener('touchmove', (e) => {
-  if (appPrefs.slideDwell === false || !orbActive) return;
+  if (appPrefs.slideDwell === false) return;
   if (e.target.closest('#bottomNav') || e.target.closest('input[type="range"]')) return;
-  const t = e.touches[0];
-  if (!t) return;
-  orbX = t.clientX;
-  orbY = t.clientY;
-  scheduleOrbFrame();
+  const t = e.touches[0]; if (!t) return;
+  if (!glassStartInHeader && Math.abs(window.scrollY - glassTouchStartScrollY) > 10) {
+    setGlassTouchActive(null); return;
+  }
+  glassSlideMoved = true;
+  const hit = document.elementFromPoint(t.clientX, t.clientY);
+  setGlassTouchActive(hit ? hit.closest(INTERACTIVE_SEL) : null);
 }, { passive: true });
-
 document.addEventListener('touchend', () => {
-  hideFingerOrb();
-  if (!dwellFired) cancelSlideDwell();
-  dwellTarget = null;
-}, { passive: true });
-
-document.addEventListener('touchcancel', () => {
-  hideFingerOrb();
-  if (!dwellFired) cancelSlideDwell();
-  dwellTarget = null;
-}, { passive: true });
-
-document.addEventListener('scroll', () => {
-  if (dwellTarget && !dwellFired) {
-    cancelSlideDwell();
-    dwellTarget = null;
+  const target = glassActiveEl;
+  const movedToOther = target && glassSlideMoved && target !== glassStartEl;
+  if (movedToOther && (glassStartInHeader || target.closest('#topHeader'))) {
+    clearGlassTouchActive();
+    glassSuppressClickUntil = Date.now() + 350;
+    target.click();
+    return;
   }
-}, { capture: true, passive: true });
-
+  clearGlassTouchActive();
+}, { passive: true });
+document.addEventListener('touchcancel', clearGlassTouchActive, { passive: true });
+document.addEventListener('scroll', () => { if (glassActiveEl && !glassStartInHeader) setGlassTouchActive(null); }, { capture: true, passive: true });
 document.addEventListener('click', (e) => {
-  if (!isProgrammaticDwellClick && Date.now() < suppressClickUntil) {
-    e.stopPropagation();
-    e.preventDefault();
-  }
+  if (Date.now() < glassSuppressClickUntil && e.isTrusted) { e.stopPropagation(); e.preventDefault(); }
 }, true);
+
 // ==================== 2. 双时区参考 + 中外双源天气 + 切地区即时建议 ====================
 const DEVICE_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai';
 let savedCities = JSON.parse(localStorage.getItem('weather_cities_v3') || '[]');
 let dismissedAutoIds = JSON.parse(localStorage.getItem('dismissed_auto_cities_v1') || '[]');
 let activeCityId = localStorage.getItem('active_city_id_v3') || '';
 let weatherCache = JSON.parse(localStorage.getItem('weather_cache_v1') || '{}');
-let deviceRefInfo = null;
-let networkRefInfo = null;
+let deviceRefInfo = null, networkRefInfo = null;
 
 const BUILTIN_CITIES = {
   '北京': [39.904, 116.407, 'Asia/Shanghai'], '上海': [31.230, 121.474, 'Asia/Shanghai'], '广州': [23.129, 113.264, 'Asia/Shanghai'],
@@ -395,14 +303,12 @@ const BUILTIN_CITIES = {
   '纽约': [40.713, -74.006, 'America/New_York'], '洛杉矶': [34.052, -118.244, 'America/Los_Angeles'], '旧金山': [37.775, -122.419, 'America/Los_Angeles'],
   '伦敦': [51.507, -0.128, 'Europe/London'], '巴黎': [48.857, 2.352, 'Europe/Paris'], '悉尼': [-33.869, 151.209, 'Australia/Sydney']
 };
-
 const WMO_MAP = {
   0: ['☀️', '晴朗'], 1: ['🌤️', '晴间多云'], 2: ['⛅', '多云'], 3: ['☁️', '阴天'],
   45: ['🌫️', '有雾'], 48: ['🌫️', '冻雾'], 51: ['🌦️', '小毛雨'], 53: ['🌦️', '毛毛雨'], 55: ['🌧️', '浓毛雨'],
   61: ['🌧️', '小雨'], 63: ['🌧️', '中雨'], 65: ['🌧️', '大雨'], 71: ['❄️', '小雪'], 73: ['❄️', '中雪'], 75: ['❄️', '大雪'],
   80: ['🌦️', '阵雨'], 81: ['🌧️', '中阵雨'], 82: ['⛈️', '强阵雨'], 95: ['⛈️', '雷阵雨'], 96: ['⛈️', '雷暴'], 99: ['⛈️', '强雷暴']
 };
-
 function wmoDesc(code) { return WMO_MAP[code] || ['🌤️', '多云']; }
 function wttrCodeToWmo(wc) {
   const c = Number(wc);
@@ -412,7 +318,6 @@ function wttrCodeToWmo(wc) {
   if (c >= 353 && c <= 359) return 80; if (c >= 386) return 95;
   return 2;
 }
-
 function saveCitiesState() {
   localStorage.setItem('weather_cities_v3', JSON.stringify(savedCities));
   localStorage.setItem('dismissed_auto_cities_v1', JSON.stringify(dismissedAutoIds));
@@ -420,9 +325,8 @@ function saveCitiesState() {
 }
 function getActiveCity() { return savedCities.find(c => c.id === activeCityId) || savedCities[0]; }
 function formatClockInTz(now, tz) {
-  try {
-    return new Intl.DateTimeFormat('zh-CN', { timeZone: tz, hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now);
-  } catch { return now.toTimeString().slice(0, 8); }
+  try { return new Intl.DateTimeFormat('zh-CN', { timeZone: tz, hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now); }
+  catch { return now.toTimeString().slice(0, 8); }
 }
 function getCityLocalHour(tz) {
   try { return Number(new Intl.DateTimeFormat('en-GB', { timeZone: tz || DEVICE_TZ, hour12: false, hour: '2-digit' }).format(new Date())) % 24; }
@@ -430,38 +334,24 @@ function getCityLocalHour(tz) {
 }
 
 function updateLiveClock() {
-  const now = new Date();
-  const city = getActiveCity();
-  const tz = city?.timezone || DEVICE_TZ;
+  const now = new Date(), city = getActiveCity(), tz = city?.timezone || DEVICE_TZ;
   try {
     document.getElementById('liveClock').textContent = formatClockInTz(now, tz);
-    document.getElementById('liveDate').textContent = new Intl.DateTimeFormat('zh-CN', {
-      timeZone: tz, year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'
-    }).format(now);
-    const tag = city?.kind === 'device' ? '📱 设备时区'
-      : (city?.kind === 'network' ? '🌐 网络时区' : (city?.kind === 'synced' ? '📍 设备与网络同区' : '🌍 自选地区'));
+    document.getElementById('liveDate').textContent = new Intl.DateTimeFormat('zh-CN', { timeZone: tz, year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(now);
+    const tag = city?.kind === 'device' ? '📱 设备时区' : (city?.kind === 'network' ? '🌐 网络时区' : (city?.kind === 'synced' ? '📍 设备与网络同区' : '🌍 自选地区'));
     document.getElementById('liveTzLabel').textContent = `${tag} · ${tz}`;
   } catch { document.getElementById('liveClock').textContent = now.toTimeString().slice(0, 8); }
 
   const dualBar = document.getElementById('dualTzBar');
   if (deviceRefInfo && networkRefInfo && deviceRefInfo.timezone !== networkRefInfo.timezone) {
     dualBar.classList.add('show');
-    dualBar.innerHTML = `
-      <span>📱 设备(${deviceRefInfo.name}): <strong>${formatClockInTz(now, deviceRefInfo.timezone)}</strong></span>
-      <span>🌐 网络(${networkRefInfo.name}): <strong>${formatClockInTz(now, networkRefInfo.timezone)}</strong></span>
-    `;
-  } else {
-    dualBar.classList.remove('show');
-  }
+    dualBar.innerHTML = `<span>📱 设备(${deviceRefInfo.name}): <strong>${formatClockInTz(now, deviceRefInfo.timezone)}</strong></span><span>🌐 网络(${networkRefInfo.name}): <strong>${formatClockInTz(now, networkRefInfo.timezone)}</strong></span>`;
+  } else dualBar.classList.remove('show');
 }
 
 async function geocodeCitySmart(rawName) {
-  const trimmed = (rawName || '').trim();
-  const clean = trimmed.replace(/(省|市|特别行政区|自治区)$/, '');
-  if (BUILTIN_CITIES[clean]) {
-    const [lat, lon, timezone] = BUILTIN_CITIES[clean];
-    return { name: clean, lat, lon, timezone };
-  }
+  const trimmed = (rawName || '').trim(), clean = trimmed.replace(/(省|市|特别行政区|自治区)$/, '');
+  if (BUILTIN_CITIES[clean]) { const [lat, lon, timezone] = BUILTIN_CITIES[clean]; return { name: clean, lat, lon, timezone }; }
   try {
     const geo = await httpGetJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(clean)}&count=1&language=zh&format=json`);
     const loc = geo?.results?.[0];
@@ -475,8 +365,7 @@ async function geocodeCitySmart(rawName) {
 }
 
 function renderCityTabs() {
-  const bar = document.getElementById('cityTabs');
-  bar.innerHTML = '';
+  const bar = document.getElementById('cityTabs'); bar.innerHTML = '';
   savedCities.forEach(c => {
     const pill = document.createElement('button');
     pill.className = 'city-pill' + (c.id === activeCityId ? ' active' : '');
@@ -486,25 +375,17 @@ function renderCityTabs() {
       if (c.id === activeCityId) {
         if (savedCities.length <= 1) { showToast('⚠️ 最少需保留 1 个地区'); return; }
         if (confirm(`确定删除地区【${c.name}】吗？`)) {
-          if ((c.id === 'auto_device' || c.id === 'auto_network') && !dismissedAutoIds.includes(c.id)) {
-            dismissedAutoIds.push(c.id);
-          }
-          savedCities = savedCities.filter(x => x.id !== c.id);
-          activeCityId = savedCities[0].id;
+          if ((c.id === 'auto_device' || c.id === 'auto_network') && !dismissedAutoIds.includes(c.id)) dismissedAutoIds.push(c.id);
+          savedCities = savedCities.filter(x => x.id !== c.id); activeCityId = savedCities[0].id;
           saveCitiesState(); renderCityTabs(); updateLiveClock(); loadActiveCityWeather();
         }
         return;
       }
-      activeCityId = c.id;
-      saveCitiesState(); renderCityTabs(); updateLiveClock(); loadActiveCityWeather();
+      activeCityId = c.id; saveCitiesState(); renderCityTabs(); updateLiveClock(); loadActiveCityWeather();
     };
     bar.appendChild(pill);
   });
-  const addBtn = document.createElement('button');
-  addBtn.className = 'city-pill';
-  addBtn.textContent = '+ 添加地区';
-  addBtn.onclick = addNewCityDialog;
-  bar.appendChild(addBtn);
+  const addBtn = document.createElement('button'); addBtn.className = 'city-pill'; addBtn.textContent = '+ 添加地区'; addBtn.onclick = addNewCityDialog; bar.appendChild(addBtn);
 }
 
 async function addNewCityDialog() {
@@ -514,26 +395,19 @@ async function addNewCityDialog() {
   const loc = await geocodeCitySmart(val.trim());
   if (!loc) return alert('未找到该地区，请尝试输入城市简称');
   const newCity = { id: 'custom_' + Date.now(), kind: 'custom', ...loc };
-  savedCities.push(newCity);
-  activeCityId = newCity.id;
+  savedCities.push(newCity); activeCityId = newCity.id;
   saveCitiesState(); renderCityTabs(); updateLiveClock(); loadActiveCityWeather();
 }
 
 function buildSmartAdvice(cityObj, overrideLabel, temp, precip, code) {
-  const city = cityObj || getActiveCity();
-  if (!city) return;
-  const tips = [];
-  const label = overrideLabel || `${city.name}当前`;
-  const localHr = getCityLocalHour(city.timezone);
-
+  const city = cityObj || getActiveCity(); if (!city) return;
+  const tips = [], label = overrideLabel || `${city.name}当前`, localHr = getCityLocalHour(city.timezone);
   if (temp != null && !isNaN(temp)) {
     if (precip >= 40 || (code >= 51 && code <= 99)) tips.push(`☔ ${label}降水概率 ${precip}%，外出记得带伞！`);
     if (temp <= 8) tips.push(`🧥 ${label}气温偏低 (${temp}°C)，注意穿厚外套防寒。`);
     else if (temp >= 29) tips.push(`🕶️ ${label}气温较高 (${temp}°C)，注意防晒与补水。`);
     else tips.push(`🌤️ ${label}温度约 ${temp}°C，体感舒适，适合学习与出行。`);
-  } else {
-    tips.push(`🕒 ${city.name}当前当地时间约 ${localHr} 点，正在同步最新气象数据...`);
-  }
+  } else tips.push(`🕒 ${city.name}当前当地时间约 ${localHr} 点，正在同步最新气象数据...`);
 
   if ((city.kind === 'device' || city.kind === 'synced') && !overrideLabel) {
     const now = new Date();
@@ -549,51 +423,35 @@ function buildSmartAdvice(cityObj, overrideLabel, temp, precip, code) {
       if (days <= 7) tips.push(`🎯 距离【${upcoming.name}】仅剩 ${days} 天，记得安排冲刺复习！`);
     }
   } else if (!overrideLabel) {
-    const period = (localHr >= 22 || localHr < 6) ? '当地正值深夜/凌晨，注意时差与休息。'
-      : (localHr >= 12 && localHr <= 14 ? '当地正值午间。' : '当地正值白天活跃时段。');
+    const period = (localHr >= 22 || localHr < 6) ? '当地正值深夜/凌晨，注意时差与休息。' : (localHr >= 12 && localHr <= 14 ? '当地正值午间。' : '当地正值白天活跃时段。');
     tips.push(`🌍 【${city.name}】${period}`);
   }
   document.getElementById('smartAdviceBox').innerHTML = `<strong>💡 ${city.name} · 智能建议</strong><br/>${tips.slice(0, 3).join('<br/>')}`;
 }
 
 async function fetchWeatherFromOpenMeteo(city) {
-  const url =
-    `https://api.open-meteo.com/v1/forecast?latitude=${city.lat}&longitude=${city.lon}` +
-    `&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m` +
-    `&hourly=temperature_2m,weather_code,precipitation_probability` +
-    `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=8`;
-  const w = await httpGetJson(url);
-  if (!w?.current) throw new Error('Open-Meteo 无数据');
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${city.lat}&longitude=${city.lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&hourly=temperature_2m,weather_code,precipitation_probability&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=8`;
+  const w = await httpGetJson(url); if (!w?.current) throw new Error('Open-Meteo 无数据');
   const cur = w.current, hourly = w.hourly || {}, daily = w.daily || {};
-  let startIdx = (hourly.time || []).findIndex(t => t.startsWith((cur.time || '').slice(0, 13)));
-  if (startIdx < 0) startIdx = 0;
-
-  const hours = [];
+  let startIdx = (hourly.time || []).findIndex(t => t.startsWith((cur.time || '').slice(0, 13))); if (startIdx < 0) startIdx = 0;
+  const hours = [], days = [];
   for (let i = startIdx; i < Math.min(startIdx + 24, (hourly.time || []).length); i++) {
     hours.push({ label: i === startIdx ? '现在' : hourly.time[i].slice(11, 16), temp: Math.round(hourly.temperature_2m[i]), code: hourly.weather_code[i], precip: hourly.precipitation_probability?.[i] ?? 0 });
   }
-  const days = [];
   for (let i = 0; i < Math.min(8, (daily.time || []).length); i++) {
     const df = daily.time[i], dObj = new Date(df + 'T12:00:00');
     days.push({ dateShort: df.slice(5), wk: i === 0 ? '今天' : (i === 1 ? '明天' : DAYS_LABEL[dObj.getDay()]), code: daily.weather_code[i], min: Math.round(daily.temperature_2m_min[i]), max: Math.round(daily.temperature_2m_max[i]), precip: daily.precipitation_probability_max?.[i] ?? 0 });
   }
   return { timezone: w.timezone || city.timezone, temp: Math.round(cur.temperature_2m), feels: Math.round(cur.apparent_temperature), humidity: cur.relative_humidity_2m, code: cur.weather_code, precip: days[0]?.precip ?? 0, hours, days };
 }
-
 async function fetchWeatherFromWttr(city) {
-  const w = await httpGetJson(`https://wttr.in/${city.lat},${city.lon}?format=j1&lang=zh`);
-  const cc = w?.current_condition?.[0];
+  const w = await httpGetJson(`https://wttr.in/${city.lat},${city.lon}?format=j1&lang=zh`), cc = w?.current_condition?.[0];
   if (!cc) throw new Error('wttr.in 无数据');
   const hours = [], days = [];
   (w.weather || []).forEach((d, idx) => {
-    const dObj = new Date(d.date + 'T12:00:00');
-    const maxRain = Math.max(...(d.hourly || []).map(h => Number(h.chanceofrain || 0)), 0);
+    const dObj = new Date(d.date + 'T12:00:00'), maxRain = Math.max(...(d.hourly || []).map(h => Number(h.chanceofrain || 0)), 0);
     days.push({ dateShort: (d.date || '').slice(5), wk: idx === 0 ? '今天' : (idx === 1 ? '明天' : DAYS_LABEL[dObj.getDay()]), code: wttrCodeToWmo(d.hourly?.[4]?.weatherCode || cc.weatherCode), min: Number(d.mintempC || 0), max: Number(d.maxtempC || 0), precip: maxRain });
-    if (idx < 2) {
-      (d.hourly || []).forEach(h => {
-        hours.push({ label: `${String(Math.floor(Number(h.time || 0) / 100)).padStart(2, '0')}:00`, temp: Number(h.tempC || cc.temp_C), code: wttrCodeToWmo(h.weatherCode), precip: Number(h.chanceofrain || 0) });
-      });
-    }
+    if (idx < 2) (d.hourly || []).forEach(h => hours.push({ label: `${String(Math.floor(Number(h.time || 0) / 100)).padStart(2, '0')}:00`, temp: Number(h.tempC || cc.temp_C), code: wttrCodeToWmo(h.weatherCode), precip: Number(h.chanceofrain || 0) }));
   });
   return { timezone: city.timezone, temp: Number(cc.temp_C), feels: Number(cc.FeelsLikeC || cc.temp_C), humidity: Number(cc.humidity || 50), code: wttrCodeToWmo(cc.weatherCode), precip: days[0]?.precip ?? 0, hours: hours.slice(0, 16), days };
 }
@@ -604,76 +462,45 @@ function renderWeatherDataToUI(city, data) {
   document.getElementById('weatherDesc').textContent = `${city.name} · ${txt}`;
   document.getElementById('weatherDetail').textContent = `体感 ${data.feels}°C · 湿度 ${data.humidity}% · 降水 ${data.precip}%`;
 
-  const hStrip = document.getElementById('hourlyStrip');
-  hStrip.innerHTML = '';
+  const hStrip = document.getElementById('hourlyStrip'); hStrip.innerHTML = '';
   (data.hours || []).forEach((h, i) => {
-    const [hIco, hTxt] = wmoDesc(h.code);
-    const chip = document.createElement('div');
+    const [hIco, hTxt] = wmoDesc(h.code), chip = document.createElement('div');
     chip.className = 'hour-chip' + (i === 0 ? ' selected' : '');
     chip.innerHTML = `<div style="opacity:0.85;">${h.label}</div><div style="font-size:16px; margin:2px 0;">${hIco}</div><div style="font-weight:700;">${h.temp}°</div><div style="opacity:0.8;">💧${h.precip}%</div>`;
-    chip.onclick = () => {
-      hStrip.querySelectorAll('.hour-chip').forEach(x => x.classList.remove('selected'));
-      chip.classList.add('selected');
-      buildSmartAdvice(city, `${city.name} ${h.label} (${hTxt})`, h.temp, h.precip, h.code);
-    };
+    chip.onclick = () => { hStrip.querySelectorAll('.hour-chip').forEach(x => x.classList.remove('selected')); chip.classList.add('selected'); buildSmartAdvice(city, `${city.name} ${h.label} (${hTxt})`, h.temp, h.precip, h.code); };
     hStrip.appendChild(chip);
   });
 
-  const dStrip = document.getElementById('dailyStrip');
-  dStrip.innerHTML = '';
+  const dStrip = document.getElementById('dailyStrip'); dStrip.innerHTML = '';
   (data.days || []).forEach((d, i) => {
-    const [dIco, dTxt] = wmoDesc(d.code);
-    const chip = document.createElement('div');
+    const [dIco, dTxt] = wmoDesc(d.code), chip = document.createElement('div');
     chip.className = 'day-chip' + (i === 0 ? ' selected' : '');
     chip.innerHTML = `<div style="font-weight:600;">${d.wk} ${d.dateShort}</div><div style="font-size:17px; margin:2px 0;">${dIco}</div><div>${dTxt}</div><div style="font-weight:700; margin-top:2px;">${d.min}°~${d.max}°</div><div style="opacity:0.8;">💧${d.precip}%</div>`;
-    chip.onclick = () => {
-      dStrip.querySelectorAll('.day-chip').forEach(x => x.classList.remove('selected'));
-      chip.classList.add('selected');
-      buildSmartAdvice(city, `${city.name} ${d.wk} (${d.dateShort} ${dTxt})`, Math.round((d.min + d.max) / 2), d.precip, d.code);
-    };
+    chip.onclick = () => { dStrip.querySelectorAll('.day-chip').forEach(x => x.classList.remove('selected')); chip.classList.add('selected'); buildSmartAdvice(city, `${city.name} ${d.wk} (${d.dateShort} ${dTxt})`, Math.round((d.min + d.max) / 2), d.precip, d.code); };
     dStrip.appendChild(chip);
   });
   buildSmartAdvice(city, null, data.temp, data.precip, data.code);
 }
 
 async function loadActiveCityWeather() {
-  const city = getActiveCity();
-  if (!city) return;
+  const city = getActiveCity(); if (!city) return;
   const reqId = city.id;
-  if (weatherCache[city.id]) {
-    renderWeatherDataToUI(city, weatherCache[city.id]);
-  } else {
-    document.getElementById('weatherDesc').textContent = `同步 ${city.name} 天气...`;
-    buildSmartAdvice(city, null, null, 0, 0);
-  }
+  if (weatherCache[city.id]) renderWeatherDataToUI(city, weatherCache[city.id]);
+  else { document.getElementById('weatherDesc').textContent = `同步 ${city.name} 天气...`; buildSmartAdvice(city, null, null, 0, 0); }
   let data = null;
-  try { data = await fetchWeatherFromOpenMeteo(city); }
-  catch { try { data = await fetchWeatherFromWttr(city); } catch {} }
+  try { data = await fetchWeatherFromOpenMeteo(city); } catch { try { data = await fetchWeatherFromWttr(city); } catch {} }
   if (getActiveCity()?.id !== reqId) return;
   if (data) {
     if (data.timezone && city.kind === 'custom') { city.timezone = data.timezone; saveCitiesState(); updateLiveClock(); }
-    weatherCache[city.id] = data;
-    localStorage.setItem('weather_cache_v1', JSON.stringify(weatherCache));
-    renderWeatherDataToUI(city, data);
-  } else if (!weatherCache[city.id]) {
-    document.getElementById('weatherDesc').textContent = `${city.name} · 暂未联网`;
-    buildSmartAdvice(city, null, null, 0, 0);
-  }
+    weatherCache[city.id] = data; localStorage.setItem('weather_cache_v1', JSON.stringify(weatherCache)); renderWeatherDataToUI(city, data);
+  } else if (!weatherCache[city.id]) { document.getElementById('weatherDesc').textContent = `${city.name} · 暂未联网`; buildSmartAdvice(city, null, null, 0, 0); }
 }
 
 async function detectDeviceAndNetworkZones(resetDismissed = false) {
   if (resetDismissed) dismissedAutoIds = [];
   let netLoc = null;
-  try {
-    const ip = await httpGetJson('https://get.geojs.io/v1/ip/geo.json');
-    if (ip?.latitude && ip?.longitude) netLoc = { name: ip.city || ip.region || '网络地区', lat: Number(ip.latitude), lon: Number(ip.longitude), timezone: ip.timezone || DEVICE_TZ };
-  } catch {}
-  if (!netLoc) {
-    try {
-      const ip2 = await httpGetJson('https://ipwho.is/');
-      if (ip2?.success) netLoc = { name: ip2.city || ip2.region || '网络地区', lat: Number(ip2.latitude), lon: Number(ip2.longitude), timezone: ip2.timezone?.id || DEVICE_TZ };
-    } catch {}
-  }
+  try { const ip = await httpGetJson('https://get.geojs.io/v1/ip/geo.json'); if (ip?.latitude && ip?.longitude) netLoc = { name: ip.city || ip.region || '网络地区', lat: Number(ip.latitude), lon: Number(ip.longitude), timezone: ip.timezone || DEVICE_TZ }; } catch {}
+  if (!netLoc) { try { const ip2 = await httpGetJson('https://ipwho.is/'); if (ip2?.success) netLoc = { name: ip2.city || ip2.region || '网络地区', lat: Number(ip2.latitude), lon: Number(ip2.longitude), timezone: ip2.timezone?.id || DEVICE_TZ }; } catch {} }
   networkRefInfo = netLoc;
 
   let devLoc = null;
@@ -682,11 +509,7 @@ async function detectDeviceAndNetworkZones(resetDismissed = false) {
       const gps = await NativeTools.getDeviceLocation();
       if (gps && gps.lat != null && gps.lon != null) {
         let cname = DEVICE_TZ.split('/').pop().replace(/_/g, ' ');
-        try {
-          const rev = await httpGetJson(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${gps.lat}&longitude=${gps.lon}&localityLanguage=zh`);
-          const f = rev?.city || rev?.locality || rev?.principalSubdivision;
-          if (f) cname = f.replace(/市$/, '');
-        } catch {}
+        try { const rev = await httpGetJson(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${gps.lat}&longitude=${gps.lon}&localityLanguage=zh`); const f = rev?.city || rev?.locality || rev?.principalSubdivision; if (f) cname = f.replace(/市$/, ''); } catch {}
         devLoc = { name: cname, lat: gps.lat, lon: gps.lon, timezone: DEVICE_TZ };
       }
     } catch {}
@@ -694,10 +517,7 @@ async function detectDeviceAndNetworkZones(resetDismissed = false) {
   if (!devLoc) {
     if (netLoc && netLoc.timezone === DEVICE_TZ) devLoc = { ...netLoc };
     else if (/Shanghai|Chongqing|Beijing/i.test(DEVICE_TZ)) devLoc = { name: '北京', lat: 39.904, lon: 116.407, timezone: DEVICE_TZ };
-    else {
-      const found = await geocodeCitySmart(DEVICE_TZ.split('/').pop().replace(/_/g, ' '));
-      if (found) devLoc = { ...found, timezone: DEVICE_TZ };
-    }
+    else { const found = await geocodeCitySmart(DEVICE_TZ.split('/').pop().replace(/_/g, ' ')); if (found) devLoc = { ...found, timezone: DEVICE_TZ }; }
   }
   if (!devLoc) devLoc = { name: '北京', lat: 39.904, lon: 116.407, timezone: DEVICE_TZ };
   deviceRefInfo = devLoc;
@@ -709,28 +529,18 @@ async function detectDeviceAndNetworkZones(resetDismissed = false) {
     if (idx >= 0) savedCities[idx] = { ...savedCities[idx], ...data, id };
     else savedCities.unshift({ id, ...data });
   };
-  if (isMismatch) {
-    upsert('auto_network', { kind: 'network', ...networkRefInfo });
-    upsert('auto_device', { kind: 'device', ...deviceRefInfo });
-  } else {
-    savedCities = savedCities.filter(c => c.id !== 'auto_network');
-    upsert('auto_device', { kind: 'synced', ...deviceRefInfo });
-  }
+  if (isMismatch) { upsert('auto_network', { kind: 'network', ...networkRefInfo }); upsert('auto_device', { kind: 'device', ...deviceRefInfo }); }
+  else { savedCities = savedCities.filter(c => c.id !== 'auto_network'); upsert('auto_device', { kind: 'synced', ...deviceRefInfo }); }
   if (!savedCities.length) savedCities.push({ id: 'auto_device', kind: 'device', ...deviceRefInfo });
   if (!savedCities.some(c => c.id === activeCityId)) activeCityId = savedCities[0].id;
   saveCitiesState(); renderCityTabs(); updateLiveClock(); await loadActiveCityWeather();
 }
-
 document.getElementById('refreshWeatherBtn').addEventListener('click', async () => {
-  showToast('🔄 正在双源刷新天气与双时区...');
-  await detectDeviceAndNetworkZones(true);
-  showToast('✅ 天气、双时区与建议已更新');
+  showToast('🔄 正在双源刷新天气与双时区...'); await detectDeviceAndNetworkZones(true); showToast('✅ 天气、双时区与建议已更新');
 });
 
 // ==================== 3. 闹钟与设备提醒引擎 ====================
-let ringInterval = null;
-let ringAudioCtx = null;
-
+let ringInterval = null, ringAudioCtx = null;
 function startRingingOverlay(title, body) {
   document.getElementById('ringTitle').textContent = title || '闹钟响铃中';
   document.getElementById('ringBody').textContent = body || '设定的时间到了！';
@@ -787,8 +597,7 @@ async function scheduleAppReminder({ id, title, body, atDate, weeklyWeekday, hou
   const channelId = isAlarm ? 'alarm_ring_v3' : (mode === 'vibrate' ? 'vibrate_channel_v3' : 'normal_channel_v3');
   if (Capacitor.isNativePlatform()) {
     try {
-      const perm = await LocalNotifications.requestPermissions();
-      if (perm.display !== 'granted') return;
+      const perm = await LocalNotifications.requestPermissions(); if (perm.display !== 'granted') return;
       const schedule = weeklyWeekday !== undefined ? { on: { weekday: weeklyWeekday, hour, minute }, allowWhileIdle: true } : { at: atDate, allowWhileIdle: true };
       await LocalNotifications.schedule({ notifications: [{ id, title: (isAlarm ? '⏰ ' : '🔔 ') + title, body, channelId, schedule, sound: isAlarm ? 'alarm_ring.wav' : 'default' }] });
     } catch {}
@@ -801,23 +610,14 @@ async function cancelReminder(id) { if (id && Capacitor.isNativePlatform()) { tr
 
 document.getElementById('testAlarmBtn').addEventListener('click', () => {
   const box = document.createElement('div');
-  box.innerHTML = `
-    <p class="sub-text" style="margin-bottom:10px;">【系统闹钟】和【系统日历】写入手机底层，关掉 App 依然准时响！</p>
-    <button class="btn" id="t5s" style="width:100%; margin-bottom:8px;">🔔 App 5秒后连续响铃</button>
-    <button class="btn btn-warn" id="tSys" style="width:100%; margin-bottom:8px;">📱 写入【系统时钟闹钟】(1分钟后)</button>
-    <button class="btn btn-green" id="tCal" style="width:100%;">📅 写入【系统日历日程】(10分钟后)</button>
-  `;
-  box.querySelector('#t5s').onclick = async () => {
-    modal.classList.remove('open');
-    await scheduleAppReminder({ id: makeSafeNotifId(), title: '响铃闹钟测试', body: '15秒连续闹铃正常！', atDate: new Date(Date.now() + 5000), mode: 'alarm' });
-    setTimeout(() => { if (document.visibilityState === 'visible') startRingingOverlay('响铃闹钟测试', '铃声正常响起！'); }, 5200);
-    showToast('⏰ 5 秒后开始响铃！');
-  };
+  box.innerHTML = `<p class="sub-text" style="margin-bottom:10px;">【系统闹钟】和【系统日历】写入手机底层，关掉 App 依然准时响！</p><button class="btn" id="t5s" style="width:100%; margin-bottom:8px;">🔔 App 5秒后连续响铃</button><button class="btn btn-warn" id="tSys" style="width:100%; margin-bottom:8px;">📱 写入【系统时钟闹钟】(1分钟后)</button><button class="btn btn-green" id="tCal" style="width:100%;">📅 写入【系统日历日程】(10分钟后)</button>`;
+  box.querySelector('#t5s').onclick = async () => { modal.classList.remove('open'); await scheduleAppReminder({ id: makeSafeNotifId(), title: '响铃闹钟测试', body: '15秒连续闹铃正常！', atDate: new Date(Date.now() + 5000), mode: 'alarm' }); setTimeout(() => { if (document.visibilityState === 'visible') startRingingOverlay('响铃闹钟测试', '铃声正常响起！'); }, 5200); showToast('⏰ 5 秒后开始响铃！'); };
   box.querySelector('#tSys').onclick = async () => { modal.classList.remove('open'); const d = new Date(Date.now() + 65000); await syncToDeviceAlarm({ hour: d.getHours(), minute: d.getMinutes(), message: '学财助手系统闹钟测试' }); };
   box.querySelector('#tCal').onclick = async () => { modal.classList.remove('open'); const s = Date.now() + 600000; await syncToDeviceCalendar({ title: '学财助手日程提醒测试', location: '自习室', description: '关App依然有效', startTimeMs: s, endTimeMs: s + 1800000 }); };
   openModal('⏰ 多样提醒与设备同步测试', box);
 });
-// ==================== 4. 通用弹窗 & OCR智能解析 ====================
+
+// ==================== 4. 通用弹窗 & Umi-OCR 统一引擎 ====================
 const modal = document.getElementById('modal');
 const modalTitle = document.getElementById('modalTitle');
 const modalContent = document.getElementById('modalContent');
@@ -831,8 +631,52 @@ function openModal(title, htmlOrNode) {
 document.getElementById('closeModalBtn').addEventListener('click', () => modal.classList.remove('open'));
 modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
 
-const PERIOD_MAP = { 1:['08:00','08:45'], 2:['08:55','09:40'], 3:['10:00','10:45'], 4:['10:55','11:40'], 5:['14:00','14:45'], 6:['14:55','15:40'], 7:['16:00','16:45'], 8:['16:55','17:40'], 9:['19:00','19:45'], 10:['19:55','20:40'] };
+async function callUmiOcrOnBase64(base64Str) {
+  const baseUrl = (umiOcrConfig.serverUrl || 'http://127.0.0.1:1224').replace(/\/+$/, '');
+  const cleanB64 = String(base64Str || '').replace(/^data:[^;]+;base64,/, '');
+  if (!cleanB64) throw new Error('图像 Base64 为空');
+  const res = await httpPostJson(`${baseUrl}/api/ocr`, {
+    base64: cleanB64,
+    options: { 'data.format': 'text', 'tbpu.parser': umiOcrConfig.parser || 'multi_para' }
+  });
+  if (res?.code === 100) return typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+  if (res?.code === 101) return '';
+  throw new Error(res?.data || `Umi-OCR 错误码 ${res?.code ?? '未知'}`);
+}
+function fileBlobToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || '').replace(/^data:[^;]+;base64,/, ''));
+    reader.onerror = () => reject(new Error('读取图片失败'));
+    reader.readAsDataURL(file);
+  });
+}
+async function extractTextViaUmiOcr(fileRecord, onProgress) {
+  if (fileRecord.textContent !== undefined && fileRecord.textContent !== '') return fileRecord.textContent;
+  if (Capacitor.isNativePlatform() && fileRecord.localPath) {
+    onProgress?.('📦 正在编码文件并提交给 Umi-OCR...');
+    const prep = await NativeTools.extractText({ localPath: fileRecord.localPath, maxPages: umiOcrConfig.maxPages || 3 });
+    if (!prep?.needsOcr) return prep?.text || '';
+    const imgs = prep.images || [], chunks = [];
+    for (let i = 0; i < imgs.length; i++) {
+      onProgress?.(`🧠 Umi-OCR 正在识别第 ${i + 1}/${imgs.length} 页...`);
+      const part = await callUmiOcrOnBase64(imgs[i]);
+      if (part && part.trim()) chunks.push(part.trim());
+    }
+    return chunks.join('\n\n');
+  }
+  if (fileRecord.rawBase64) { onProgress?.('🧠 正在调用 Umi-OCR...'); return await callUmiOcrOnBase64(fileRecord.rawBase64); }
+  if (fileRecord.dataUrl && fileRecord.dataUrl.startsWith('data:image')) { onProgress?.('🧠 正在调用 Umi-OCR...'); return await callUmiOcrOnBase64(fileRecord.dataUrl); }
+  throw new Error('该文件请在安卓端使用，或在浏览器直接选择图片');
+}
+function showUmiOcrErrorModal(errMsg) {
+  const box = document.createElement('div');
+  box.innerHTML = `<p class="sub-text" style="color:#dc2626; font-size:13px; margin-bottom:10px;">Umi-OCR 识别失败：${errMsg}</p><div class="sub-text" style="padding:10px; background:var(--card-sub); border-radius:8px; border:1px solid var(--border); margin-bottom:10px;">当前服务地址：<strong>${umiOcrConfig.serverUrl}</strong><br/>请启动 <a href="https://github.com/hiroi-sora/Umi-OCR" target="_blank" rel="noopener" style="color:var(--primary);">Umi-OCR</a> 并在「全局设置 → 高级 → HTTP 服务」选择“任何可用地址”。</div><button class="btn" id="openUmiCfgFromErr" style="width:100%;">⚙️ 立即配置 Umi-OCR 服务地址</button>`;
+  box.querySelector('#openUmiCfgFromErr').onclick = () => { modal.classList.remove('open'); applyAppearance(); settingsModal.classList.add('open'); };
+  openModal('🧠 Umi-OCR 服务未就绪', box);
+}
 
+const PERIOD_MAP = { 1:['08:00','08:45'], 2:['08:55','09:40'], 3:['10:00','10:45'], 4:['10:55','11:40'], 5:['14:00','14:45'], 6:['14:55','15:40'], 7:['16:00','16:45'], 8:['16:55','17:40'], 9:['19:00','19:45'], 10:['19:55','20:40'] };
 function parseSmartText(rawText) {
   const lines = (rawText || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   const parsedCourses = [], parsedEvents = [];
@@ -840,14 +684,13 @@ function parseSmartText(rawText) {
   const timeRangeRegex = /(\d{1,2})[:：](\d{2})\s*[-~至到]\s*(\d{1,2})[:：](\d{2})/, singleTimeRegex = /(\d{1,2})[:：](\d{2})/;
   const periodRegex = /第?\s*(\d{1,2})\s*[-~至到]?\s*(\d{1,2})?\s*节/, dateRegex = /(?:(\d{4})[-/.年])?\s*(\d{1,2})[-/.月](\d{1,2})日?/, roomRegex = /([教实图综A-Za-z楼栋室]*\s*[A-Za-z]?-?\d{3,4}[室]?)/;
   const yearNow = new Date().getFullYear();
-
   lines.forEach(line => {
     const dm = line.match(dateRegex);
     if (dm && !line.includes('周')) {
       const y = dm[1] ? Number(dm[1]) : yearNow, mo = String(Number(dm[2])).padStart(2, '0'), da = String(Number(dm[3])).padStart(2, '0');
       const tm = line.match(singleTimeRegex), hh = tm ? String(Number(tm[1])).padStart(2, '0') : '09', mm = tm ? tm[2] : '00', rm = line.match(roomRegex);
       const title = line.replace(dateRegex, '').replace(timeRangeRegex, '').replace(singleTimeRegex, '').replace(/[,，|]/g, ' ').trim() || '识别日程';
-      parsedEvents.push({ type: /考|测验|答辩/.test(line) ? '考试' : (/闹钟|起床/.test(line) ? '闹钟' : '日程'), name: title.slice(0, 28), datetime: `${y}-${mo}-${da}T${hh}:${mm}`, room: rm ? rm[1] : '', note: '智能识别导入' });
+      parsedEvents.push({ type: /考|测验|答辩/.test(line) ? '考试' : (/闹钟|起床/.test(line) ? '闹钟' : '日程'), name: title.slice(0, 28), datetime: `${y}-${mo}-${da}T${hh}:${mm}`, room: rm ? rm[1] : '', note: 'Umi-OCR 导入' });
       return;
     }
     const dw = line.match(dayRegex), tr = line.match(timeRangeRegex), pr = line.match(periodRegex);
@@ -864,18 +707,16 @@ function parseSmartText(rawText) {
 }
 
 async function runSmartRecognizeFromLocalFile(fileRecord) {
-  openModal('🧠 智能识别中...', '<div style="text-align:center; padding:24px;">正在离线提取文字并解析...</div>');
+  openModal('🧠 Umi-OCR 识别中...', `<div id="umiProgressTip" style="text-align:center; padding:24px;">正在请求 Umi-OCR (${umiOcrConfig.serverUrl})...</div>`);
   try {
-    let text = fileRecord.textContent || '';
-    if (!text && Capacitor.isNativePlatform() && fileRecord.localPath) text = (await NativeTools.extractText({ localPath: fileRecord.localPath })).text || '';
+    const text = await extractTextViaUmiOcr(fileRecord, (msg) => { const el = document.getElementById('umiProgressTip'); if (el) el.textContent = msg; });
     showSmartImportReviewModal(text);
-  } catch (e) { openModal('识别提示', `<p class="sub-text" style="color:#dc2626;">识别失败：${e.message}</p>`); }
+  } catch (e) { showUmiOcrErrorModal(e.message); }
 }
 
 function showSmartImportReviewModal(rawText) {
-  const { parsedCourses, parsedEvents } = parseSmartText(rawText);
-  const box = document.createElement('div');
-  box.innerHTML = `<div style="font-size:12px; font-weight:600; margin-bottom:4px;">📄 提取到的原文（可微调）：</div><textarea id="ocrRawEdit" style="min-height:95px; font-size:12px;">${(rawText || '').replace(/</g, '&lt;')}</textarea><button class="btn btn-sm btn-outline" id="reparseBtn" style="margin:6px 0 10px;">🔄 重新解析</button><div id="parsedPreviewArea"></div>`;
+  const { parsedCourses, parsedEvents } = parseSmartText(rawText), box = document.createElement('div');
+  box.innerHTML = `<div style="font-size:12px; font-weight:600; margin-bottom:4px;">📄 Umi-OCR 提取原文（可微调）：</div><textarea id="ocrRawEdit" style="min-height:95px; font-size:12px;">${(rawText || '').replace(/</g, '&lt;')}</textarea><button class="btn btn-sm btn-outline" id="reparseBtn" style="margin:6px 0 10px;">🔄 重新解析</button><div id="parsedPreviewArea"></div>`;
   const renderPreview = (cList, eList) => {
     const area = box.querySelector('#parsedPreviewArea');
     if (!cList.length && !eList.length) { area.innerHTML = `<div class="sub-text" style="color:#b45309; padding:8px; background:#fef3c7; border-radius:8px;">示例：<br/><code>高等数学 周一 08:00-09:40 教A201</code><br/><code>英语考试 2026-12-20 09:00 教B305</code></div>`; return; }
@@ -899,17 +740,26 @@ function showSmartImportReviewModal(rawText) {
   };
   renderPreview(parsedCourses, parsedEvents);
   box.querySelector('#reparseBtn').onclick = () => { const r = parseSmartText(box.querySelector('#ocrRawEdit').value); renderPreview(r.parsedCourses, r.parsedEvents); };
-  openModal('🧠 智能识别结果确认', box);
+  openModal('🧠 Umi-OCR 智能识别确认', box);
 }
 
+let pendingWebOcrCallback = null;
+document.getElementById('fallbackOcrFileInput').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0]; e.target.value = '';
+  if (!file || !pendingWebOcrCallback) return;
+  const cb = pendingWebOcrCallback; pendingWebOcrCallback = null;
+  if (file.type.startsWith('text/')) cb({ textContent: await file.text() });
+  else cb({ rawBase64: await fileBlobToBase64(file) });
+});
 async function pickAndSmartRecognize() {
   try {
     if (Capacitor.isNativePlatform()) { const res = await NativeTools.pickFiles({ accept: '*/*', multiple: false }); if (res.files?.[0]) await runSmartRecognizeFromLocalFile(res.files[0]); }
-    else { const t = prompt('粘贴文字测试解析：', '高等数学 周一 08:00-09:40 A201'); if (t) showSmartImportReviewModal(t); }
+    else { pendingWebOcrCallback = (rec) => runSmartRecognizeFromLocalFile(rec); document.getElementById('fallbackOcrFileInput').click(); }
   } catch (e) { if (!String(e.message).includes('取消')) alert('选择失败：' + e.message); }
 }
 document.getElementById('smartImportCourseBtn').addEventListener('click', pickAndSmartRecognize);
 document.getElementById('smartImportExamBtn').addEventListener('click', pickAndSmartRecognize);
+document.getElementById('quickConfigUmiBtn').addEventListener('click', () => { applyAppearance(); settingsModal.classList.add('open'); });
 
 // ==================== 5. 课表与考试日程 ====================
 let courses = JSON.parse(localStorage.getItem('courses_v1') || '[]');
@@ -932,8 +782,7 @@ function saveCourses() { localStorage.setItem('courses_v1', JSON.stringify(cours
 function saveExams() { localStorage.setItem('exams_v1', JSON.stringify(exams)); renderExams(); }
 
 function renderDayTabs() {
-  const wrap = document.getElementById('dayTabs');
-  wrap.innerHTML = '';
+  const wrap = document.getElementById('dayTabs'); wrap.innerHTML = '';
   [1, 2, 3, 4, 5, 6, 0].forEach(d => {
     const b = document.createElement('button');
     b.className = 'day-pill' + (d === selectedDay ? ' active' : '');
@@ -942,53 +791,32 @@ function renderDayTabs() {
     wrap.appendChild(b);
   });
 }
-
 function renderCourses() {
   const list = document.getElementById('courseList');
   const filtered = courses.filter(c => Number(c.day) === Number(selectedDay)).sort((a, b) => a.start.localeCompare(b.start));
   if (!filtered.length) { list.innerHTML = '<div class="sub-text" style="text-align:center; padding:16px;">今天暂无排课 ✨</div>'; return; }
   list.innerHTML = '';
   filtered.forEach(c => {
-    const t = calcCourseAlarmTime(c), div = document.createElement('div');
-    div.className = 'item-row';
-    div.innerHTML = `
-      <div style="flex:1;">
-        <div><strong>${c.name}</strong> <span class="badge badge-alarm">提前${c.advance}分</span></div>
-        <div class="sub-text">🕒 ${c.start}-${c.end} ｜ 📍 ${c.room || '未填教室'}</div>
-      </div>
-      <div style="display:flex; flex-direction:column; gap:4px;">
-        <button class="btn btn-sm btn-warn sys-alarm-btn">⏰系统闹钟</button>
-        <button class="btn btn-sm btn-green sys-cal-btn">📅系统日历</button>
-        <button class="btn btn-sm btn-danger del-btn">删除</button>
-      </div>
-    `;
+    const t = calcCourseAlarmTime(c), div = document.createElement('div'); div.className = 'item-row';
+    div.innerHTML = `<div style="flex:1;"><div><strong>${c.name}</strong> <span class="badge badge-alarm">提前${c.advance}分</span></div><div class="sub-text">🕒 ${c.start}-${c.end} ｜ 📍 ${c.room || '未填教室'}</div></div><div style="display:flex; flex-direction:column; gap:4px;"><button class="btn btn-sm btn-warn sys-alarm-btn">⏰系统闹钟</button><button class="btn btn-sm btn-green sys-cal-btn">📅系统日历</button><button class="btn btn-sm btn-danger del-btn">删除</button></div>`;
     div.querySelector('.sys-alarm-btn').onclick = () => syncToDeviceAlarm({ hour: t.hour, minute: t.minute, message: `上课：${c.name} (${c.room || ''})`, days: [t.capWeekday] });
-    div.querySelector('.sys-cal-btn').onclick = () => {
-      const sD = getNextWeekdayDate(Number(c.day), c.start), eD = getNextWeekdayDate(Number(c.day), c.end);
-      syncToDeviceCalendar({ title: `上课：${c.name}`, location: c.room || '', description: `每周${DAYS_LABEL[c.day]}`, startTimeMs: sD.getTime(), endTimeMs: Math.max(eD.getTime(), sD.getTime() + 3600000), rrule: `FREQ=WEEKLY;BYDAY=${RRULE_DAYS[Number(c.day)]}` });
-    };
+    div.querySelector('.sys-cal-btn').onclick = () => { const sD = getNextWeekdayDate(Number(c.day), c.start), eD = getNextWeekdayDate(Number(c.day), c.end); syncToDeviceCalendar({ title: `上课：${c.name}`, location: c.room || '', description: `每周${DAYS_LABEL[c.day]}`, startTimeMs: sD.getTime(), endTimeMs: Math.max(eD.getTime(), sD.getTime() + 3600000), rrule: `FREQ=WEEKLY;BYDAY=${RRULE_DAYS[Number(c.day)]}` }); };
     div.querySelector('.del-btn').onclick = async () => { await cancelReminder(c.notifId); courses = courses.filter(x => x.id !== c.id); saveCourses(); };
     list.appendChild(div);
   });
 }
-
 async function addCourseItem(item) {
   const t = calcCourseAlarmTime(item), notifId = makeSafeNotifId();
   await scheduleAppReminder({ id: notifId, title: `即将上课：${item.name}`, body: `${item.start}-${item.end} ${item.room || ''}`, weeklyWeekday: t.capWeekday, hour: t.hour, minute: t.minute, mode: item.mode || 'alarm' });
   courses.push({ ...item, id: Date.now() + Math.random(), notifId }); saveCourses(); return t;
 }
-
 document.getElementById('addCourseBtn').addEventListener('click', async () => {
-  const name = document.getElementById('cName').value.trim();
-  if (!name) return alert('请输入课程名称');
+  const name = document.getElementById('cName').value.trim(); if (!name) return alert('请输入课程名称');
   const item = { name, day: Number(document.getElementById('cDay').value), room: document.getElementById('cRoom').value.trim(), start: document.getElementById('cStart').value, end: document.getElementById('cEnd').value, advance: Number(document.getElementById('cAdvance').value), mode: document.getElementById('cMode').value };
-  const t = await addCourseItem(item);
-  document.getElementById('cName').value = ''; document.getElementById('cRoom').value = '';
+  const t = await addCourseItem(item); document.getElementById('cName').value = ''; document.getElementById('cRoom').value = '';
   if (item.mode === 'sys_alarm') await syncToDeviceAlarm({ hour: t.hour, minute: t.minute, message: `上课：${item.name}`, days: [t.capWeekday] });
-  else if (item.mode === 'sys_cal') {
-    const sD = getNextWeekdayDate(item.day, item.start), eD = getNextWeekdayDate(item.day, item.end);
-    await syncToDeviceCalendar({ title: `上课：${item.name}`, location: item.room, description: `每周${DAYS_LABEL[item.day]}`, startTimeMs: sD.getTime(), endTimeMs: Math.max(eD.getTime(), sD.getTime() + 3600000), rrule: `FREQ=WEEKLY;BYDAY=${RRULE_DAYS[item.day]}` });
-  } else showToast('✅ 课程与提醒已保存');
+  else if (item.mode === 'sys_cal') { const sD = getNextWeekdayDate(item.day, item.start), eD = getNextWeekdayDate(item.day, item.end); await syncToDeviceCalendar({ title: `上课：${item.name}`, location: item.room, description: `每周${DAYS_LABEL[item.day]}`, startTimeMs: sD.getTime(), endTimeMs: Math.max(eD.getTime(), sD.getTime() + 3600000), rrule: `FREQ=WEEKLY;BYDAY=${RRULE_DAYS[item.day]}` }); }
+  else showToast('✅ 课程与提醒已保存');
 });
 document.getElementById('openBatchCourseBtn').addEventListener('click', () => showSmartImportReviewModal('高等数学 周一 08:00-09:40 教A101\n大学英语 周三 10:00-11:40 教B205'));
 
@@ -997,45 +825,26 @@ async function addExamOrScheduleItem(item) {
   if (targetMs > Date.now()) await scheduleAppReminder({ id: notifId, title: `${item.type || '日程'}：${item.name}`, body: `${item.datetime.replace('T', ' ')} ${item.room || ''}`, atDate: new Date(targetMs), mode: item.mode || 'alarm' });
   exams.push({ ...item, type: item.type || '考试', id: Date.now() + Math.random(), notifId }); saveExams(); return targetMs;
 }
-
 function renderExams() {
   const list = document.getElementById('examList'), sorted = [...exams].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
   if (!sorted.length) { list.innerHTML = '<div class="sub-text" style="text-align:center; padding:16px;">暂无日程 🎯</div>'; return; }
   list.innerHTML = ''; const now = Date.now();
   sorted.forEach(ex => {
     const diffMs = new Date(ex.datetime).getTime() - now; let cd = '已过时', uc = '';
-    if (diffMs > 0) {
-      const d = Math.floor(diffMs / 86400000), h = Math.floor((diffMs % 86400000) / 3600000), m = Math.floor((diffMs % 3600000) / 60000);
-      cd = d > 0 ? `剩 ${d}天${h}时` : (h > 0 ? `剩 ${h}时${m}分` : `剩 ${m}分钟`);
-      if (d <= 3) uc = 'badge-urgent';
-    }
-    const div = document.createElement('div');
-    div.className = 'item-row';
-    div.innerHTML = `
-      <div style="flex:1;">
-        <div><span class="badge">${ex.type || '考试'}</span><strong>${ex.name}</strong> <span class="badge ${uc}">${cd}</span></div>
-        <div class="sub-text">📅 ${ex.datetime.replace('T', ' ')} ｜ 📍 ${ex.room || '无'}</div>
-        ${ex.note ? `<div class="sub-text">📌 ${ex.note}</div>` : ''}
-      </div>
-      <div style="display:flex; flex-direction:column; gap:4px;">
-        <button class="btn btn-sm btn-warn sys-alarm-btn">⏰系统闹钟</button>
-        <button class="btn btn-sm btn-green sys-cal-btn">📅系统日历</button>
-        <button class="btn btn-sm btn-danger del-btn">删除</button>
-      </div>
-    `;
+    if (diffMs > 0) { const d = Math.floor(diffMs / 86400000), h = Math.floor((diffMs % 86400000) / 3600000), m = Math.floor((diffMs % 3600000) / 60000); cd = d > 0 ? `剩 ${d}天${h}时` : (h > 0 ? `剩 ${h}时${m}分` : `剩 ${m}分钟`); if (d <= 3) uc = 'badge-urgent'; }
+    const div = document.createElement('div'); div.className = 'item-row';
+    div.innerHTML = `<div style="flex:1;"><div><span class="badge">${ex.type || '考试'}</span><strong>${ex.name}</strong> <span class="badge ${uc}">${cd}</span></div><div class="sub-text">📅 ${ex.datetime.replace('T', ' ')} ｜ 📍 ${ex.room || '无'}</div>${ex.note ? `<div class="sub-text">📌 ${ex.note}</div>` : ''}</div><div style="display:flex; flex-direction:column; gap:4px;"><button class="btn btn-sm btn-warn sys-alarm-btn">⏰系统闹钟</button><button class="btn btn-sm btn-green sys-cal-btn">📅系统日历</button><button class="btn btn-sm btn-danger del-btn">删除</button></div>`;
     div.querySelector('.sys-alarm-btn').onclick = () => { const t = new Date(new Date(ex.datetime).getTime() - Number(ex.advance || 0) * 60000); syncToDeviceAlarm({ hour: t.getHours(), minute: t.getMinutes(), message: `${ex.type}：${ex.name}` }); };
     div.querySelector('.sys-cal-btn').onclick = () => { const st = new Date(ex.datetime).getTime(); syncToDeviceCalendar({ title: `[${ex.type}] ${ex.name}`, location: ex.room || '', description: ex.note || '', startTimeMs: st, endTimeMs: st + 7200000 }); };
     div.querySelector('.del-btn').onclick = async () => { await cancelReminder(ex.notifId); exams = exams.filter(x => x.id !== ex.id); saveExams(); };
     list.appendChild(div);
   });
 }
-
 document.getElementById('addExamBtn').addEventListener('click', async () => {
   const name = document.getElementById('eName').value.trim(), datetime = document.getElementById('eDateTime').value;
   if (!name || !datetime) return alert('请填写标题和日期时间');
   const item = { type: document.getElementById('eType').value, name, datetime, room: document.getElementById('eRoom').value.trim(), note: document.getElementById('eNote').value.trim(), advance: Number(document.getElementById('eAdvance').value), mode: document.getElementById('eMode').value };
-  const targetMs = await addExamOrScheduleItem(item);
-  document.getElementById('eName').value = ''; document.getElementById('eRoom').value = ''; document.getElementById('eNote').value = '';
+  const targetMs = await addExamOrScheduleItem(item); document.getElementById('eName').value = ''; document.getElementById('eRoom').value = ''; document.getElementById('eNote').value = '';
   if (item.mode === 'sys_alarm') { const t = new Date(targetMs); await syncToDeviceAlarm({ hour: t.getHours(), minute: t.getMinutes(), message: `${item.type}：${item.name}` }); }
   else if (item.mode === 'sys_cal') { const st = new Date(datetime).getTime(); await syncToDeviceCalendar({ title: `[${item.type}] ${item.name}`, location: item.room, description: item.note, startTimeMs: st, endTimeMs: st + 7200000 }); }
   else showToast('✅ 日程与提醒已保存');
@@ -1044,40 +853,24 @@ document.getElementById('addExamBtn').addEventListener('click', async () => {
 // ==================== 6. 图文资料库 ====================
 let localFiles = JSON.parse(localStorage.getItem('files_meta_v3') || '[]');
 function saveFilesMeta() { localStorage.setItem('files_meta_v3', JSON.stringify(localFiles)); renderFiles(); }
-
 function renderFiles() {
   const filter = document.getElementById('fileFilter').value, items = localFiles.filter(f => filter === 'all' || f.category === filter), list = document.getElementById('fileList');
   if (!items.length) { list.innerHTML = '<div class="sub-text" style="text-align:center; padding:16px;">暂无资料 📂</div>'; return; }
   list.innerHTML = '';
   items.forEach(f => {
-    const srcUrl = f.localPath ? Capacitor.convertFileSrc(f.localPath) : (f.dataUrl || '');
-    const div = document.createElement('div');
-    div.className = 'item-row';
+    const srcUrl = f.localPath ? Capacitor.convertFileSrc(f.localPath) : (f.dataUrl || ''), div = document.createElement('div'); div.className = 'item-row';
     const leftHtml = f.category === 'image' && srcUrl ? `<img src="${srcUrl}" class="thumb" />` : `<div style="font-size:26px; width:46px; text-align:center;">${f.category === 'text' ? '📝' : '📄'}</div>`;
-    div.innerHTML = `
-      <div style="display:flex; gap:10px; align-items:center; flex:1; cursor:pointer;" class="open-trigger">
-        ${leftHtml}
-        <div>
-          <div style="font-weight:500; word-break:break-all;">${f.name}</div>
-          <div class="sub-text"><span class="badge badge-fmt">${f.format || 'FILE'}</span> ${(f.size / 1024).toFixed(1)} KB</div>
-        </div>
-      </div>
-      <div style="display:flex; flex-direction:column; gap:4px;">
-        <button class="btn btn-sm btn-green ocr-btn">🧠 识课表</button>
-        <button class="btn btn-sm btn-danger del-btn">删除</button>
-      </div>
-    `;
+    div.innerHTML = `<div style="display:flex; gap:10px; align-items:center; flex:1; cursor:pointer;" class="open-trigger">${leftHtml}<div><div style="font-weight:500; word-break:break-all;">${f.name}</div><div class="sub-text"><span class="badge badge-fmt">${f.format || 'FILE'}</span> ${(f.size / 1024).toFixed(1)} KB</div></div></div><div style="display:flex; flex-direction:column; gap:4px;"><button class="btn btn-sm btn-green ocr-btn">🧠 Umi-OCR</button><button class="btn btn-sm btn-danger del-btn">删除</button></div>`;
     div.querySelector('.open-trigger').onclick = () => {
-      if (f.category === 'image') { openModal(f.name, `<img src="${srcUrl}" style="width:100%; border-radius:8px; margin-bottom:10px;" /><button class="btn btn-green" style="width:100%;" id="mOcr">🧠 OCR 识别图中课表/日程</button>`); document.getElementById('mOcr').onclick = () => runSmartRecognizeFromLocalFile(f); }
+      if (f.category === 'image') { openModal(f.name, `<img src="${srcUrl}" style="width:100%; border-radius:8px; margin-bottom:10px;" /><button class="btn btn-green" style="width:100%;" id="mOcr">🧠 Umi-OCR 识别图中课表/日程</button>`); document.getElementById('mOcr').onclick = () => runSmartRecognizeFromLocalFile(f); }
       else if (f.textContent !== undefined) openModal(f.name, `<pre style="white-space:pre-wrap; font-size:13px;">${f.textContent.replace(/</g, '&lt;')}</pre>`);
-      else { openModal(f.name, `<p class="sub-text">格式：${f.format} ｜ ${(f.size / 1024).toFixed(1)} KB</p><button class="btn btn-green" style="width:100%;" id="mDocOcr">🧠 提取文字并解析</button>`); document.getElementById('mDocOcr').onclick = () => runSmartRecognizeFromLocalFile(f); }
+      else { openModal(f.name, `<p class="sub-text">格式：${f.format} ｜ ${(f.size / 1024).toFixed(1)} KB</p><button class="btn btn-green" style="width:100%;" id="mDocOcr">🧠 Umi-OCR / 文档提取并解析</button>`); document.getElementById('mDocOcr').onclick = () => runSmartRecognizeFromLocalFile(f); }
     };
     div.querySelector('.ocr-btn').onclick = () => runSmartRecognizeFromLocalFile(f);
     div.querySelector('.del-btn').onclick = async () => { if (Capacitor.isNativePlatform() && f.localPath) { try { await NativeTools.deleteLocalFile({ localPath: f.localPath }); } catch {} } localFiles = localFiles.filter(x => x.id !== f.id); saveFilesMeta(); };
     list.appendChild(div);
   });
 }
-
 document.getElementById('nativeImportFileBtn').addEventListener('click', async () => {
   if (Capacitor.isNativePlatform()) {
     try {
@@ -1095,7 +888,8 @@ document.getElementById('nativeImportFileBtn').addEventListener('click', async (
 document.getElementById('fallbackFileInput').addEventListener('change', async (e) => {
   for (const file of e.target.files) {
     const ext = (file.name.split('.').pop() || 'FILE').toUpperCase(), isImg = file.type.startsWith('image/'), isTxt = file.type.startsWith('text/') || /^(TXT|MD|CSV)$/.test(ext);
-    localFiles.unshift({ id: Date.now() + Math.random(), name: file.name, format: ext, size: file.size, category: isImg ? 'image' : (isTxt ? 'text' : 'doc'), textContent: isTxt ? await file.text() : undefined, dataUrl: isImg ? URL.createObjectURL(file) : undefined, createdAt: Date.now() });
+    let dataUrl; if (isImg) dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file); });
+    localFiles.unshift({ id: Date.now() + Math.random(), name: file.name, format: ext, size: file.size, category: isImg ? 'image' : (isTxt ? 'text' : 'doc'), textContent: isTxt ? await file.text() : undefined, dataUrl, createdAt: Date.now() });
   }
   e.target.value = ''; saveFilesMeta();
 });
@@ -1111,7 +905,297 @@ document.getElementById('openNoteModalBtn').addEventListener('click', () => {
 });
 document.getElementById('fileFilter').addEventListener('change', renderFiles);
 
-// ==================== 7. 零占用直读音乐 + 常驻搜歌/听歌历史 + 硬件EQ ====================
+// ==================== 7. 内置 MusicFree 插件引擎 + 歌词同步 + 零占用播放器 + 硬件EQ + 白噪音 ====================
+const MF_OFFICIAL_SUB_URL = 'https://raw.gitcode.com/maotoumao/MusicFreePlugins/raw/master/plugins.json';
+
+const BufferShim = {
+  from(input, encoding = 'utf8') {
+    let bytes;
+    if (input instanceof Uint8Array) bytes = input;
+    else if (encoding === 'base64') { const bin = atob(String(input)); bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); }
+    else if (encoding === 'hex') { const s = String(input).replace(/\s+/g, ''); bytes = new Uint8Array(s.length / 2); for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(s.substr(i * 2, 2), 16); }
+    else bytes = new TextEncoder().encode(String(input));
+    return {
+      _bytes: bytes, length: bytes.length,
+      toString(enc = 'utf8') {
+        if (enc === 'base64') { let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]); return btoa(bin); }
+        if (enc === 'hex') return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        return new TextDecoder().decode(bytes);
+      }
+    };
+  },
+  isBuffer(obj) { return !!(obj && obj._bytes instanceof Uint8Array); }
+};
+
+function createCheerioShim() {
+  function wrapNodes(nodes) {
+    const arr = Array.from(nodes || []).filter(Boolean);
+    const obj = {
+      length: arr.length,
+      get(i) { return i === undefined ? arr : arr[i]; },
+      eq(i) { return wrapNodes(arr[i] ? [arr[i]] : []); },
+      first() { return wrapNodes(arr.slice(0, 1)); },
+      last() { return wrapNodes(arr.slice(-1)); },
+      find(sel) { const res = []; arr.forEach(n => { if (n.querySelectorAll) res.push(...n.querySelectorAll(sel)); }); return wrapNodes(res); },
+      children(sel) { const res = []; arr.forEach(n => Array.from(n.children || []).forEach(c => { if (!sel || c.matches(sel)) res.push(c); })); return wrapNodes(res); },
+      parent() { return wrapNodes(arr.map(n => n.parentElement).filter(Boolean)); },
+      next() { return wrapNodes(arr.map(n => n.nextElementSibling).filter(Boolean)); },
+      prev() { return wrapNodes(arr.map(n => n.previousElementSibling).filter(Boolean)); },
+      each(fn) { arr.forEach((n, i) => fn.call(n, i, n)); return obj; },
+      map(fn) { const mapped = arr.map((n, i) => fn.call(n, i, n)); return { get: () => mapped, toArray: () => mapped }; },
+      text() { return arr.map(n => n.textContent || '').join(''); },
+      html() { return arr[0]?.innerHTML || ''; },
+      attr(name) { return arr[0]?.getAttribute?.(name) ?? undefined; },
+      data(name) { return arr[0]?.getAttribute?.('data-' + name) ?? undefined; }
+    };
+    arr.forEach((n, i) => { obj[i] = n; });
+    return obj;
+  }
+  return {
+    load(html) {
+      const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+      const $ = (sel, ctx) => {
+        if (!sel) return wrapNodes([]);
+        if (typeof sel !== 'string') return wrapNodes(sel.nodeType ? [sel] : (sel.length ? Array.from(sel) : []));
+        const root = ctx ? (ctx[0] || ctx) : doc;
+        try { return wrapNodes(root.querySelectorAll ? root.querySelectorAll(sel) : []); } catch { return wrapNodes([]); }
+      };
+      $.html = () => doc.documentElement?.outerHTML || '';
+      $.text = () => doc.body?.textContent || '';
+      return $;
+    }
+  };
+}
+
+function createAxiosShim(defaults = {}) {
+  async function request(cfgOrUrl, maybeCfg) {
+    const cfg = typeof cfgOrUrl === 'string' ? { ...(maybeCfg || {}), url: cfgOrUrl } : { ...(cfgOrUrl || {}) };
+    const method = (cfg.method || 'GET').toUpperCase();
+    let url = cfg.url || '';
+    const base = cfg.baseURL || defaults.baseURL || '';
+    if (base && !/^https?:\/\//i.test(url)) url = base.replace(/\/+$/, '') + '/' + url.replace(/^\/+/, '');
+    if (cfg.params && typeof cfg.params === 'object') { const q = qs.stringify(cfg.params); if (q) url += (url.includes('?') ? '&' : '?') + q; }
+    const headers = { ...(defaults.headers || {}), ...(cfg.headers || {}) };
+    if (!headers['User-Agent'] && !headers['user-agent']) headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36';
+
+    if (Capacitor.isNativePlatform()) {
+      const res = await CapacitorHttp.request({ url, method, headers, data: cfg.data, responseType: cfg.responseType === 'text' ? 'text' : undefined });
+      let data = res.data;
+      if (typeof data === 'string' && cfg.responseType !== 'text') {
+        const tr = data.trim();
+        if ((tr.startsWith('{') && tr.endsWith('}')) || (tr.startsWith('[') && tr.endsWith(']'))) { try { data = JSON.parse(tr); } catch {} }
+      }
+      return { data, status: res.status, headers: res.headers || {}, config: cfg };
+    }
+    const fetchOpts = { method, headers };
+    if (cfg.data !== undefined && method !== 'GET' && method !== 'HEAD') fetchOpts.body = typeof cfg.data === 'string' ? cfg.data : JSON.stringify(cfg.data);
+    const resp = await fetch(url, fetchOpts), txt = await resp.text();
+    let data = txt; if (cfg.responseType !== 'text') { try { data = JSON.parse(txt); } catch {} }
+    const respHeaders = {}; resp.headers.forEach((v, k) => { respHeaders[k] = v; });
+    return { data, status: resp.status, headers: respHeaders, config: cfg };
+  }
+  request.request = request;
+  request.get = (url, cfg) => request({ ...(cfg || {}), url, method: 'GET' });
+  request.delete = (url, cfg) => request({ ...(cfg || {}), url, method: 'DELETE' });
+  request.head = (url, cfg) => request({ ...(cfg || {}), url, method: 'HEAD' });
+  request.post = (url, data, cfg) => request({ ...(cfg || {}), url, data, method: 'POST' });
+  request.put = (url, data, cfg) => request({ ...(cfg || {}), url, data, method: 'PUT' });
+  request.create = (sub) => createAxiosShim({ ...defaults, ...(sub || {}) });
+  request.defaults = defaults;
+  request.default = request;
+  return request;
+}
+
+const mfAxios = createAxiosShim();
+const mfCheerio = createCheerioShim();
+
+const BUILTIN_MF_PLUGINS = [
+  {
+    id: 'builtin_netease_pub', enabled: true, builtin: true, srcUrl: '',
+    code: `const axios=require("axios");module.exports={platform:"网易公开(内置)",version:"1.0.0",author:"StudyHub",supportedSearchType:["music"],async search(query,page,type){if(type!=="music")return{isEnd:true,data:[]};const res=await axios.get("https://music.163.com/api/search/get/web",{params:{s:query,type:1,offset:(page-1)*12,limit:12},headers:{Referer:"https://music.163.com/"}});const songs=(res.data&&res.data.result&&res.data.result.songs)||[];return{isEnd:songs.length<12,data:songs.map(s=>({id:String(s.id),title:s.name,artist:(s.artists||[]).map(a=>a.name).join("/")||"未知歌手",album:(s.album&&s.album.name)||"",artwork:(s.album&&s.album.picUrl)||"",duration:Math.floor((s.duration||0)/1000)}))};},async getMediaSource(item){return{url:"https://music.163.com/song/media/outer/url?id="+item.id+".mp3",headers:{Referer:"https://music.163.com/"}};},async getLyric(item){try{const res=await axios.get("https://music.163.com/api/song/lyric",{params:{id:item.id,lv:1,tv:-1},headers:{Referer:"https://music.163.com/"}});return{rawLrc:(res.data&&res.data.lrc&&res.data.lrc.lyric)||""};}catch(e){return{rawLrc:""};}}};`
+  },
+  {
+    id: 'builtin_apple_hk', enabled: true, builtin: true, srcUrl: '',
+    code: `const axios=require("axios");module.exports={platform:"Apple试听(内置)",version:"1.0.0",author:"StudyHub",supportedSearchType:["music"],async search(query,page,type){if(type!=="music")return{isEnd:true,data:[]};const res=await axios.get("https://itunes.apple.com/search",{params:{term:query,entity:"song",limit:10,country:"HK"}});const rows=(res.data&&res.data.results)||[];return{isEnd:true,data:rows.filter(r=>r.previewUrl).map(r=>({id:String(r.trackId),title:r.trackName,artist:r.artistName||"歌手",album:r.collectionName||"",artwork:r.artworkUrl100||"",url:r.previewUrl}))};},async getMediaSource(item){return{url:item.url};}};`
+  },
+  {
+    id: 'builtin_audius_free', enabled: true, builtin: true, srcUrl: '',
+    code: `const axios=require("axios");module.exports={platform:"Audius完整(内置)",version:"1.0.0",author:"StudyHub",supportedSearchType:["music"],async search(query,page,type){if(type!=="music")return{isEnd:true,data:[]};const res=await axios.get("https://discoveryprovider.audius.co/v1/tracks/search",{params:{query:query,app_name:"studyhub"}});const rows=(res.data&&res.data.data)||[];return{isEnd:true,data:rows.slice(0,8).map(t=>({id:String(t.id),title:t.title,artist:(t.user&&t.user.name)||"Audius",artwork:(t.artwork&&t.artwork["150x150"])||""}))};},async getMediaSource(item){return{url:"https://discoveryprovider.audius.co/v1/tracks/"+item.id+"/stream?app_name=studyhub"};}};`
+  }
+];
+
+let mfStoredPlugins = JSON.parse(localStorage.getItem('mf_plugins_v1') || 'null');
+if (!Array.isArray(mfStoredPlugins) || !mfStoredPlugins.length) {
+  mfStoredPlugins = BUILTIN_MF_PLUGINS.map(p => ({ ...p }));
+  localStorage.setItem('mf_plugins_v1', JSON.stringify(mfStoredPlugins));
+}
+let mfUserVars = JSON.parse(localStorage.getItem('mf_user_vars_v1') || '{}');
+let mfActivePlatform = 'all';
+const mfCompiledCache = new Map();
+
+function compileMfPlugin(record) {
+  const cacheKey = `${record.id}_${record.code?.length || 0}`;
+  if (mfCompiledCache.has(cacheKey)) return mfCompiledCache.get(cacheKey);
+  const mod = { exports: {} }, pluginVars = mfUserVars[record.id] || {};
+  const envObj = { getUserVariables: () => ({ ...pluginVars }), os: Capacitor.isNativePlatform() ? 'android' : 'web', appVersion: '2.0.0' };
+  const customRequire = (name) => {
+    if (name === 'axios') return mfAxios;
+    if (name === 'cheerio') return mfCheerio;
+    if (name === 'crypto-js') return CryptoJS;
+    if (name === 'dayjs') return dayjs;
+    if (name === 'he') return he;
+    if (name === 'qs') return qs;
+    if (name === 'buffer') return { Buffer: BufferShim };
+    return {};
+  };
+  new Function('require', 'module', 'exports', 'env', 'Buffer', 'console', record.code)(customRequire, mod, mod.exports, envObj, BufferShim, console);
+  const inst = mod.exports?.default || mod.exports;
+  if (!inst || !inst.platform) throw new Error('非标准 MusicFree 插件（缺少 platform）');
+  mfCompiledCache.set(cacheKey, inst);
+  return inst;
+}
+function getAllLoadedMfPlugins() {
+  return mfStoredPlugins.map(rec => { try { return { rec, inst: compileMfPlugin(rec) }; } catch (e) { return { rec, inst: null, error: e.message }; } });
+}
+function saveMfPlugins() {
+  localStorage.setItem('mf_plugins_v1', JSON.stringify(mfStoredPlugins));
+  mfCompiledCache.clear();
+  renderMfSourceTabs();
+}
+async function installSingleMfPluginFromCode(code, srcUrl = '') {
+  const tempRec = { id: 'mf_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), enabled: true, builtin: false, srcUrl, code };
+  const inst = compileMfPlugin(tempRec);
+  const finalSrc = srcUrl || inst.srcUrl || '';
+  const existIdx = mfStoredPlugins.findIndex(p => { try { return compileMfPlugin(p).platform === inst.platform; } catch { return false; } });
+  const record = { id: existIdx >= 0 ? mfStoredPlugins[existIdx].id : tempRec.id, enabled: true, builtin: false, srcUrl: finalSrc, code };
+  if (existIdx >= 0) mfStoredPlugins[existIdx] = record; else mfStoredPlugins.unshift(record);
+  saveMfPlugins();
+  return inst.platform;
+}
+async function installMfFromUrl(url) {
+  const cleanUrl = (url || '').trim(); if (!cleanUrl) throw new Error('请输入有效链接');
+  const txt = await httpGetText(cleanUrl), trimmed = txt.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    const parsed = JSON.parse(trimmed), items = Array.isArray(parsed) ? parsed : (parsed.plugins || []);
+    if (!items.length) throw new Error('订阅 JSON 中未找到 plugins');
+    let ok = 0, fail = 0;
+    for (const item of items) {
+      if (!item?.url) continue;
+      try { const jsCode = await httpGetText(item.url); await installSingleMfPluginFromCode(jsCode, item.url); ok++; } catch { fail++; }
+    }
+    return `订阅安装完成：成功 ${ok} 个${fail ? `，失败 ${fail} 个` : ''}`;
+  }
+  const pname = await installSingleMfPluginFromCode(txt, cleanUrl);
+  return `已安装 MusicFree 插件【${pname}】`;
+}
+
+function renderMfSourceTabs() {
+  const enabledList = getAllLoadedMfPlugins().filter(x => x.rec.enabled && x.inst);
+  const cntEl = document.getElementById('mfPluginCount'); if (cntEl) cntEl.textContent = String(enabledList.length);
+  const tabs = document.getElementById('mfSourceTabs'); if (!tabs) return;
+  tabs.innerHTML = '';
+  const allBtn = document.createElement('button');
+  allBtn.className = 'day-pill' + (mfActivePlatform === 'all' ? ' active' : '');
+  allBtn.textContent = `全部源(${enabledList.length})`;
+  allBtn.onclick = () => { mfActivePlatform = 'all'; renderMfSourceTabs(); };
+  tabs.appendChild(allBtn);
+  enabledList.forEach(({ inst }) => {
+    const b = document.createElement('button');
+    b.className = 'day-pill' + (mfActivePlatform === inst.platform ? ' active' : '');
+    b.textContent = inst.platform;
+    b.onclick = () => { mfActivePlatform = inst.platform; renderMfSourceTabs(); };
+    tabs.appendChild(b);
+  });
+}
+
+function openMfPluginManagerModal() {
+  const box = document.createElement('div');
+  box.innerHTML = `
+    <div class="sub-text" style="margin-bottom:8px;">完全兼容 <a href="https://musicfree.catcat.work" target="_blank" rel="noopener" style="color:var(--primary); font-weight:600;">MusicFree</a> 插件协议：支持 <code>.json</code> 订阅源、单链接 <code>.js</code> 或本地导入。</div>
+    <div class="search-row" style="margin-bottom:8px;"><input id="mfUrlInput" placeholder="粘贴 MusicFree 订阅 .json 或 .js 链接..." /><button class="btn btn-sm" id="mfInstallUrlBtn" style="white-space:nowrap;">安装</button></div>
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;"><button class="btn btn-sm btn-green" id="mfInstallOfficialBtn">⚡ 装官方示例源</button><button class="btn btn-sm btn-outline" id="mfImportLocalBtn">📁 本地 .js</button><button class="btn btn-sm btn-outline" id="mfUpdateAllBtn">🔄 全部更新</button></div>
+    <div id="mfPluginListHost"></div>
+  `;
+  const renderList = () => {
+    const host = box.querySelector('#mfPluginListHost'), items = getAllLoadedMfPlugins();
+    if (!items.length) { host.innerHTML = '<div class="sub-text">暂无插件</div>'; return; }
+    host.innerHTML = '';
+    items.forEach(({ rec, inst, error }) => {
+      const row = document.createElement('div'); row.className = 'item-row';
+      const title = inst ? inst.platform : (rec.id + ' (异常)'), meta = inst ? `v${inst.version || '1.0'} · ${inst.author || '社区'}${rec.builtin ? ' · 内置' : ''}` : `错误: ${error}`;
+      row.innerHTML = `<div style="flex:1; min-width:0;"><div style="font-weight:600; font-size:13px;">${title} ${rec.enabled ? '<span class="badge">启用</span>' : '<span class="badge badge-alarm">停用</span>'}</div><div class="sub-text" style="word-break:break-all;">${meta}</div></div><div style="display:flex; gap:4px; flex-shrink:0;"><button class="btn btn-sm btn-outline toggle-btn">${rec.enabled ? '停用' : '启用'}</button>${rec.srcUrl ? '<button class="btn btn-sm btn-green upd-btn">更新</button>' : ''}<button class="btn btn-sm btn-danger rm-btn">卸载</button></div>`;
+      row.querySelector('.toggle-btn').onclick = () => { rec.enabled = !rec.enabled; saveMfPlugins(); renderList(); };
+      row.querySelector('.upd-btn')?.addEventListener('click', async () => { showToast(`🔄 更新 ${title}...`); try { showToast('✅ ' + await installMfFromUrl(rec.srcUrl)); renderList(); } catch (e) { alert('更新失败：' + e.message); } });
+      row.querySelector('.rm-btn').onclick = () => { if (!confirm(`卸载插件【${title}】？`)) return; mfStoredPlugins = mfStoredPlugins.filter(x => x.id !== rec.id); if (mfActivePlatform === title) mfActivePlatform = 'all'; saveMfPlugins(); renderList(); };
+      host.appendChild(row);
+    });
+  };
+  renderList();
+  box.querySelector('#mfInstallUrlBtn').onclick = async () => {
+    const u = box.querySelector('#mfUrlInput').value.trim(); if (!u) return alert('请先输入链接');
+    showToast('🔌 正在安装 MusicFree 插件...');
+    try { const msg = await installMfFromUrl(u); box.querySelector('#mfUrlInput').value = ''; showToast('✅ ' + msg, 2800); renderList(); }
+    catch (e) { alert('安装失败：' + e.message); }
+  };
+  box.querySelector('#mfInstallOfficialBtn').onclick = async () => {
+    showToast('⚡ 正在拉取官方示例源...');
+    try { showToast('✅ ' + await installMfFromUrl(MF_OFFICIAL_SUB_URL), 2800); renderList(); } catch (e) { alert('拉取失败：' + e.message); }
+  };
+  box.querySelector('#mfImportLocalBtn').onclick = async () => {
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const res = await NativeTools.pickFiles({ accept: '*/*', multiple: true }); let ok = 0;
+        for (const f of (res.files || [])) { const ex = await NativeTools.extractText({ localPath: f.localPath }); if (ex?.text) { await installSingleMfPluginFromCode(ex.text, ''); ok++; } }
+        showToast(`✅ 本地导入 ${ok} 个插件`); renderList();
+      } catch (e) { if (!String(e.message).includes('取消')) alert('导入失败：' + e.message); }
+    } else document.getElementById('fallbackPluginFileInput').click();
+  };
+  box.querySelector('#mfUpdateAllBtn').onclick = async () => {
+    const targets = mfStoredPlugins.filter(p => p.srcUrl); if (!targets.length) return showToast('暂无可更新外部插件');
+    let ok = 0; for (const p of targets) { try { await installMfFromUrl(p.srcUrl); ok++; } catch {} }
+    showToast(`✅ 已更新 ${ok}/${targets.length} 个插件`); renderList();
+  };
+  openModal('🧩 MusicFree 插件管理', box);
+}
+document.getElementById('openMfPluginModalBtn').addEventListener('click', openMfPluginManagerModal);
+document.getElementById('fallbackPluginFileInput').addEventListener('change', async (e) => {
+  for (const f of e.target.files) { try { await installSingleMfPluginFromCode(await f.text(), ''); showToast(`✅ 已导入 ${f.name}`); } catch (err) { alert(`插件无效：${err.message}`); } }
+  e.target.value = '';
+});
+
+// LRC 同步歌词
+let parsedLyrics = [], activeLyricIndex = -1;
+function parseLrc(rawLrc) {
+  const lines = [], regex = /\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/g;
+  String(rawLrc || '').split(/\r?\n/).forEach(row => {
+    const times = []; let m;
+    while ((m = regex.exec(row)) !== null) times.push(Number(m[1]) * 60000 + Number(m[2]) * 1000 + (m[3] ? Number(m[3].padEnd(3, '0')) : 0));
+    const text = row.replace(regex, '').trim();
+    if (text && times.length) times.forEach(t => lines.push({ timeMs: t, text }));
+  });
+  return lines.sort((a, b) => a.timeMs - b.timeMs);
+}
+function renderLyricsBox(rawLrc, fallbackMsg = '暂无同步歌词') {
+  const box = document.getElementById('lyricBox'); if (!box) return;
+  parsedLyrics = parseLrc(rawLrc); activeLyricIndex = -1;
+  if (!parsedLyrics.length) { box.innerHTML = `<div class="sub-text">${fallbackMsg}</div>`; return; }
+  box.innerHTML = parsedLyrics.map((l, i) => `<div class="lyric-line" data-lidx="${i}">${l.text.replace(/</g, '&lt;')}</div>`).join('');
+}
+function updateActiveLyric(currentMs) {
+  if (!parsedLyrics.length) return;
+  let idx = -1;
+  for (let i = 0; i < parsedLyrics.length; i++) { if (parsedLyrics[i].timeMs <= currentMs + 250) idx = i; else break; }
+  if (idx === activeLyricIndex) return;
+  activeLyricIndex = idx;
+  const box = document.getElementById('lyricBox'); if (!box) return;
+  box.querySelectorAll('.lyric-line.active').forEach(el => el.classList.remove('active'));
+  if (idx >= 0) {
+    const el = box.querySelector(`.lyric-line[data-lidx="${idx}"]`);
+    if (el) { el.classList.add('active'); box.scrollTo({ top: Math.max(0, el.offsetTop - box.clientHeight / 2 + 12), behavior: 'smooth' }); }
+  }
+}
+
+// 助眠白噪音与定时关闭
 let ambCtx = null, ambNodes = [], ambGain = null, sleepTimeout = null;
 function stopAmbient() {
   ambNodes.forEach(n => { try { n.stop?.(); n.disconnect?.(); } catch {} }); ambNodes = [];
@@ -1156,6 +1240,7 @@ document.querySelectorAll('.ambient-btn').forEach(btn => btn.addEventListener('c
 document.getElementById('stopAmbientBtn').addEventListener('click', stopAmbient);
 document.getElementById('ambientVol').addEventListener('input', (e) => { if (ambGain) ambGain.gain.value = Number(e.target.value); });
 
+// 播放器控制、EQ、歌单与 MusicFree 聚合搜歌
 const audioPlayer = document.getElementById('audioPlayer'), musicSeek = document.getElementById('musicSeek'), curTimeEl = document.getElementById('curTime'), durTimeEl = document.getElementById('durTime'), playPauseBtn = document.getElementById('playPauseBtn'), loopModeBtn = document.getElementById('loopModeBtn');
 let tracks = JSON.parse(localStorage.getItem('tracks_v4') || '[]');
 let onlineMusicHist = JSON.parse(localStorage.getItem('online_music_hist_v1') || '[]');
@@ -1190,88 +1275,86 @@ loopModeBtn.addEventListener('click', () => {
 });
 function saveTracks() { localStorage.setItem('tracks_v4', JSON.stringify(tracks)); renderTracks(); }
 function getTrackSource(t) { return t.uri || t.localPath || t.onlineUrl || t.webUrl || ''; }
+function getTrackHeadersJson(t) { return JSON.stringify(t.headers || {}); }
 
 function renderOnlineHistoryBox() {
-  const box = document.getElementById('onlineMusicHistoryBox');
-  if (!box) return;
+  const box = document.getElementById('onlineMusicHistoryBox'); if (!box) return;
   box.innerHTML = '';
-
-  const searchHdr = document.createElement('div');
-  searchHdr.className = 'sub-text';
+  const searchHdr = document.createElement('div'); searchHdr.className = 'sub-text';
   searchHdr.style.cssText = 'display:flex; justify-content:space-between; margin-bottom:4px; margin-top:0;';
   searchHdr.innerHTML = `<span>🕒 搜歌历史 (${onlineMusicHist.length})</span>${onlineMusicHist.length ? '<button class="btn btn-sm btn-danger" id="clrSearchHistBtn" style="padding:1px 6px; font-size:10px;">清空</button>' : ''}`;
   box.appendChild(searchHdr);
-
   if (onlineMusicHist.length) {
-    const pills = document.createElement('div');
-    pills.className = 'day-tabs';
-    pills.style.paddingBottom = '4px';
-    onlineMusicHist.forEach(kw => {
-      const p = document.createElement('button');
-      p.className = 'day-pill';
-      p.textContent = kw;
-      p.onclick = () => { document.getElementById('onlineMusicQuery').value = kw; searchOnlineMusic(kw); };
-      pills.appendChild(p);
-    });
+    const pills = document.createElement('div'); pills.className = 'day-tabs'; pills.style.paddingBottom = '4px';
+    onlineMusicHist.forEach(kw => { const p = document.createElement('button'); p.className = 'day-pill'; p.textContent = kw; p.onclick = () => { document.getElementById('onlineMusicQuery').value = kw; searchOnlineMusic(kw); }; pills.appendChild(p); });
     box.appendChild(pills);
-    searchHdr.querySelector('#clrSearchHistBtn').onclick = () => {
-      onlineMusicHist = [];
-      localStorage.setItem('online_music_hist_v1', '[]');
-      renderOnlineHistoryBox();
-    };
+    searchHdr.querySelector('#clrSearchHistBtn').onclick = () => { onlineMusicHist = []; localStorage.setItem('online_music_hist_v1', '[]'); renderOnlineHistoryBox(); };
   } else {
-    const empty = document.createElement('div');
-    empty.className = 'sub-text';
-    empty.textContent = '暂无搜歌历史，搜索任意歌名或歌手后会自动记录在这里';
-    box.appendChild(empty);
+    const empty = document.createElement('div'); empty.className = 'sub-text'; empty.textContent = '暂无搜歌历史，搜索任意歌名或歌手后自动记录'; box.appendChild(empty);
   }
-
   if (onlinePlayHist.length) {
-    const playHdr = document.createElement('div');
-    playHdr.className = 'sub-text';
+    const playHdr = document.createElement('div'); playHdr.className = 'sub-text';
     playHdr.style.cssText = 'display:flex; justify-content:space-between; margin:6px 0 4px; padding-top:6px; border-top:1px dashed var(--border);';
     playHdr.innerHTML = `<span>🎧 最近在线听过 (${onlinePlayHist.length})</span><button class="btn btn-sm btn-danger" id="clrPlayHistBtn" style="padding:1px 6px; font-size:10px;">清空</button>`;
     box.appendChild(playHdr);
-    playHdr.querySelector('#clrPlayHistBtn').onclick = () => {
-      onlinePlayHist = [];
-      localStorage.setItem('online_play_hist_v1', '[]');
-      renderOnlineHistoryBox();
-    };
-
-    const pRow = document.createElement('div');
-    pRow.className = 'day-tabs';
-    pRow.style.paddingBottom = '2px';
+    playHdr.querySelector('#clrPlayHistBtn').onclick = () => { onlinePlayHist = []; localStorage.setItem('online_play_hist_v1', '[]'); renderOnlineHistoryBox(); };
+    const pRow = document.createElement('div'); pRow.className = 'day-tabs'; pRow.style.paddingBottom = '2px';
     onlinePlayHist.forEach(item => {
-      const b = document.createElement('button');
-      b.className = 'day-pill';
-      b.textContent = `▶️ ${item.title}`;
-      b.onclick = () => playSingleOnlineUrl(item.url, item.title, item.format);
+      const b = document.createElement('button'); b.className = 'day-pill'; b.textContent = `▶️ ${item.title}`;
+      b.onclick = () => playSingleOnlineUrl(item.url, item.title, item.format, item.headers || {});
       pRow.appendChild(b);
     });
     box.appendChild(pRow);
   }
 }
 
-async function playSingleOnlineUrl(url, title, format) {
+async function playSingleOnlineUrl(url, title, format, headers = {}, rawLrc = '') {
   isPlayingOnlineStream = true;
   currentTrackIdx = -1;
   renderTracks();
   updateTrackUiHeader(title, format);
+  renderLyricsBox(rawLrc, rawLrc ? '' : '🎵 正在播放（当前曲目暂无同步歌词）');
 
-  onlinePlayHist = [{ url, title, format }, ...onlinePlayHist.filter(x => x.url !== url)].slice(0, 12);
+  onlinePlayHist = [{ url, title, format, headers }, ...onlinePlayHist.filter(x => x.url !== url)].slice(0, 12);
   localStorage.setItem('online_play_hist_v1', JSON.stringify(onlinePlayHist));
   renderOnlineHistoryBox();
 
   if (Capacitor.isNativePlatform()) {
     try {
       await NativeTools.audioPlayList({
-        paths: [url], titles: [title], formats: [format || 'STREAM'], index: 0, loopMode: 'single',
-        speed: Number(document.getElementById('playSpeed').value),
+        paths: [url], titles: [title], formats: [format || 'STREAM'], headers: [JSON.stringify(headers || {})],
+        index: 0, loopMode: 'single', speed: Number(document.getElementById('playSpeed').value),
         bass: Number(document.getElementById('eqBass').value), mid: Number(document.getElementById('eqMid').value), treble: Number(document.getElementById('eqTreble').value)
       });
       playPauseBtn.textContent = '⏸ 暂停'; applySleepTimer();
-    } catch (e) { alert('在线播放失败（可能受版权限制）：' + e.message); }
+    } catch (e) { alert('在线播放失败：' + e.message); }
   } else { audioPlayer.src = url; audioPlayer.play().catch(() => {}); }
+}
+
+async function playMusicFreeSong(pluginInst, songItem) {
+  const quality = document.getElementById('mfQualitySelect')?.value || 'standard';
+  showToast(`🎵 正在通过【${pluginInst.platform}】解析音源...`);
+  let mediaRes = null;
+  if (typeof pluginInst.getMediaSource === 'function') {
+    mediaRes = await pluginInst.getMediaSource(songItem, quality);
+  } else if (songItem.url) {
+    mediaRes = { url: songItem.url };
+  }
+  if (!mediaRes?.url) throw new Error('该音源未返回可播放地址（可能需会员或换源）');
+  const headers = { ...(mediaRes.headers || {}) };
+  if (mediaRes.userAgent && !headers['User-Agent']) headers['User-Agent'] = mediaRes.userAgent;
+  const fullTitle = `${songItem.title || '未知歌曲'} - ${songItem.artist || '未知歌手'}`;
+  const fmt = /\.flac/i.test(mediaRes.url) ? 'FLAC' : (/\.m4a/i.test(mediaRes.url) ? 'M4A' : 'MP3');
+
+  let rawLrc = '';
+  if (typeof pluginInst.getLyric === 'function') {
+    try {
+      const lrcRes = await pluginInst.getLyric(songItem);
+      rawLrc = lrcRes?.rawLrc || (lrcRes?.lrc ? await httpGetText(lrcRes.lrc) : '');
+    } catch {}
+  }
+  await playSingleOnlineUrl(mediaRes.url, fullTitle, fmt, headers, rawLrc);
+  return { url: mediaRes.url, headers, format: fmt, title: fullTitle };
 }
 
 async function playTrackAt(idx) {
@@ -1280,11 +1363,13 @@ async function playTrackAt(idx) {
   currentTrackIdx = (idx + tracks.length) % tracks.length;
   const t = tracks[currentTrackIdx];
   updateTrackUiHeader(t.name, t.format);
+  renderLyricsBox('', '🎵 正在播放歌单曲目');
   renderTracks();
   if (Capacitor.isNativePlatform()) {
     try {
       await NativeTools.audioPlayList({
-        paths: tracks.map(getTrackSource), titles: tracks.map(x => x.name || '音乐'), formats: tracks.map(x => x.format || 'AUDIO'),
+        paths: tracks.map(getTrackSource), titles: tracks.map(x => x.name || '音乐'),
+        formats: tracks.map(x => x.format || 'AUDIO'), headers: tracks.map(getTrackHeadersJson),
         index: currentTrackIdx, loopMode, speed: Number(document.getElementById('playSpeed').value),
         bass: Number(document.getElementById('eqBass').value), mid: Number(document.getElementById('eqMid').value), treble: Number(document.getElementById('eqTreble').value)
       });
@@ -1292,6 +1377,15 @@ async function playTrackAt(idx) {
     } catch (err) { playPauseBtn.textContent = '▶️ 播放'; alert('播放失败：' + err.message); }
   } else { audioPlayer.src = getTrackSource(t); audioPlayer.play().catch(() => {}); }
 }
+
+audioPlayer.addEventListener('timeupdate', () => {
+  if (!Capacitor.isNativePlatform() && !isUserSeeking && audioPlayer.duration) {
+    curTimeEl.textContent = fmtSec(audioPlayer.currentTime);
+    durTimeEl.textContent = fmtSec(audioPlayer.duration);
+    musicSeek.value = (audioPlayer.currentTime / audioPlayer.duration) * 100;
+    updateActiveLyric(audioPlayer.currentTime * 1000);
+  }
+});
 
 setInterval(async () => {
   if (!Capacitor.isNativePlatform() || document.visibilityState !== 'visible') return;
@@ -1308,9 +1402,10 @@ setInterval(async () => {
       curTimeEl.textContent = fmtSec((st.currentMs || 0) / 1000);
       durTimeEl.textContent = fmtSec(nativeDurationMs / 1000);
       musicSeek.value = ((st.currentMs || 0) / nativeDurationMs) * 100;
+      updateActiveLyric(st.currentMs || 0);
     }
   } catch {}
-}, 500);
+}, 450);
 
 musicSeek.addEventListener('pointerdown', () => { isUserSeeking = true; });
 musicSeek.addEventListener('touchstart', () => { isUserSeeking = true; }, { passive: true });
@@ -1333,48 +1428,35 @@ document.getElementById('nextTrackBtn').addEventListener('click', () => playTrac
 
 async function searchOnlineMusic(query) {
   const q = query.trim(), resBox = document.getElementById('onlineMusicResults');
-  resBox.innerHTML = '';
-  if (!q) return;
-
+  resBox.innerHTML = ''; if (!q) return;
   onlineMusicHist = [q, ...onlineMusicHist.filter(x => x !== q)].slice(0, 12);
   localStorage.setItem('online_music_hist_v1', JSON.stringify(onlineMusicHist));
   renderOnlineHistoryBox();
 
-  resBox.innerHTML = '<div class="sub-text" style="padding:8px;">🔍 正在多源曲库搜歌（网易云 / Apple多区 / Audius）...</div>';
-  const songs = [], seen = new Set();
-  const pushSong = (s) => { const k = `${s.title}-${s.artist}-${s.src}`.toLowerCase(); if (!seen.has(k) && s.url) { seen.add(k); songs.push(s); } };
+  const plugins = getAllLoadedMfPlugins().filter(x => x.rec.enabled && x.inst && typeof x.inst.search === 'function' && (mfActivePlatform === 'all' || x.inst.platform === mfActivePlatform));
+  if (!plugins.length) { resBox.innerHTML = '<div class="sub-text" style="padding:8px;">请先点上方「🔌 插件管理」启用或安装 MusicFree 插件！</div>'; return; }
 
-  try {
-    const ne = await httpGetJson(`https://music.163.com/api/search/get/web?s=${encodeURIComponent(q)}&type=1&offset=0&limit=10`, { Referer: 'https://music.163.com/' });
-    (ne?.result?.songs || []).forEach(s => pushSong({
-      title: s.name, artist: (s.artists || []).map(a => a.name).join('/') || '未知歌手',
-      cover: s.album?.picUrl || '', url: `https://music.163.com/song/media/outer/url?id=${s.id}.mp3`, format: 'MP3', src: '网易云'
-    }));
-  } catch {}
-
-  for (const country of ['HK', 'CN']) {
+  resBox.innerHTML = `<div class="sub-text" style="padding:8px;">🔍 MusicFree 引擎正在 ${plugins.length} 个音源并行搜索「${q}」...</div>`;
+  const results = [];
+  await Promise.allSettled(plugins.map(async ({ inst }) => {
     try {
-      const it = await httpGetJson(`https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=song&limit=8&country=${country}`);
-      (it?.results || []).forEach(r => { if (r.previewUrl) pushSong({ title: r.trackName, artist: r.artistName || '歌手', cover: r.artworkUrl100 || '', url: r.previewUrl, format: 'M4A', src: `Apple(${country})` }); });
+      const r = await inst.search(q, 1, 'music');
+      (r?.data || []).slice(0, 10).forEach(item => results.push({ plugin: inst, item }));
     } catch {}
-  }
-
-  try {
-    const au = await httpGetJson(`https://discoveryprovider.audius.co/v1/tracks/search?query=${encodeURIComponent(q)}&app_name=studyhub`);
-    (au?.data || []).slice(0, 4).forEach(t => { if (t.id) pushSong({ title: t.title, artist: t.user?.name || 'Audius', cover: t.artwork?.['150x150'] || '', url: `https://discoveryprovider.audius.co/v1/tracks/${t.id}/stream?app_name=studyhub`, format: 'MP3', src: 'Audius完整' }); });
-  } catch {}
+  }));
 
   resBox.innerHTML = '';
-  if (!songs.length) { resBox.innerHTML = '<div class="sub-text" style="padding:8px;">未搜到结果，换个关键词试试~</div>'; return; }
+  if (!results.length) { resBox.innerHTML = '<div class="sub-text" style="padding:8px;">未搜到结果，试试切换音源或安装更多 MusicFree 插件~</div>'; return; }
 
-  songs.slice(0, 16).forEach(s => {
+  results.slice(0, 24).forEach(({ plugin, item }) => {
     const row = document.createElement('div'); row.className = 'item-row';
+    const title = item.title || '未知歌曲', artist = item.artist || '未知歌手';
     row.innerHTML = `
       <div style="display:flex; gap:10px; align-items:center; flex:1; min-width:0;">
-        ${s.cover ? `<img src="${s.cover}" class="cover-img" />` : `<div class="cover-img" style="display:flex;align-items:center;justify-content:center;">🎵</div>`}
+        ${item.artwork ? `<img src="${item.artwork}" class="cover-img" />` : `<div class="cover-img" style="display:flex;align-items:center;justify-content:center;">🎵</div>`}
         <div style="min-width:0;">
-          <div style="font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${s.title}</div>
-          <div class="sub-text"><span class="badge badge-alarm">${s.src}</span><span class="badge badge-fmt">${s.format}</span> ${s.artist}</div>
+          <div style="font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${title}</div>
+          <div class="sub-text"><span class="badge badge-alarm">${plugin.platform}</span> ${artist}${item.album ? ' · ' + item.album : ''}</div>
         </div>
       </div>
       <div style="display:flex; gap:4px; flex-shrink:0;">
@@ -1382,10 +1464,21 @@ async function searchOnlineMusic(query) {
         <button class="btn btn-sm btn-outline fav-online">⭐收藏</button>
       </div>
     `;
-    row.querySelector('.play-online').onclick = () => playSingleOnlineUrl(s.url, `${s.title} - ${s.artist}`, s.format);
+    row.querySelector('.play-online').onclick = async () => {
+      try { await playMusicFreeSong(plugin, item); }
+      catch (e) { alert('播放失败：' + e.message); }
+    };
     row.querySelector('.fav-online').onclick = async (e) => {
-      tracks.push({ id: Date.now() + Math.random(), name: `${s.title} - ${s.artist}`, format: s.format, size: 0, onlineUrl: s.url, isOnlineRef: true });
-      saveTracks(); await syncPlaylistWithoutInterrupt(); e.target.textContent = '已藏✅'; e.target.disabled = true;
+      e.target.textContent = '解析中...';
+      try {
+        const quality = document.getElementById('mfQualitySelect')?.value || 'standard';
+        const m = typeof plugin.getMediaSource === 'function' ? await plugin.getMediaSource(item, quality) : { url: item.url };
+        if (!m?.url) throw new Error('无法获取音频链接');
+        const hdrs = { ...(m.headers || {}) };
+        if (m.userAgent && !hdrs['User-Agent']) hdrs['User-Agent'] = m.userAgent;
+        tracks.push({ id: Date.now() + Math.random(), name: `${title} - ${artist}`, format: plugin.platform, size: 0, onlineUrl: m.url, headers: hdrs, isOnlineRef: true });
+        saveTracks(); await syncPlaylistWithoutInterrupt(); e.target.textContent = '已藏✅'; e.target.disabled = true;
+      } catch (err) { e.target.textContent = '⭐收藏'; alert('收藏失败：' + err.message); }
     };
     resBox.appendChild(row);
   });
@@ -1396,14 +1489,13 @@ document.getElementById('onlineMusicQuery').addEventListener('keydown', (e) => {
 document.getElementById('refreshOnlineMusicBtn').addEventListener('click', () => {
   const cur = document.getElementById('onlineMusicQuery').value.trim() || onlineMusicHist[0] || '华语经典';
   document.getElementById('onlineMusicQuery').value = cur;
-  searchOnlineMusic(cur); showToast('🔄 已刷新在线曲库');
+  searchOnlineMusic(cur); showToast('🔄 已刷新 MusicFree 搜歌结果');
 });
 
 async function syncPlaylistWithoutInterrupt() {
   if (!Capacitor.isNativePlatform() || isPlayingOnlineStream) return;
-  try { await NativeTools.audioUpdatePlaylist({ paths: tracks.map(getTrackSource), titles: tracks.map(x => x.name || '音乐'), formats: tracks.map(x => x.format || 'AUDIO') }); } catch {}
+  try { await NativeTools.audioUpdatePlaylist({ paths: tracks.map(getTrackSource), titles: tracks.map(x => x.name || '音乐'), formats: tracks.map(x => x.format || 'AUDIO'), headers: tracks.map(getTrackHeadersJson) }); } catch {}
 }
-
 function renderTracks() {
   const list = document.getElementById('trackList');
   if (!tracks.length) { list.innerHTML = '<div class="sub-text" style="text-align:center; padding:10px;">本地直读路径播放（零复制不占内存），支持 MP3/FLAC/WAV/M4A/OGG 🎶</div>'; return; }
@@ -1411,7 +1503,7 @@ function renderTracks() {
   tracks.forEach((t, i) => {
     const isActive = !isPlayingOnlineStream && i === currentTrackIdx, div = document.createElement('div');
     div.className = 'item-row' + (isActive ? ' playing-row' : '');
-    const sizeText = t.isOnlineRef ? '在线流 · 0MB占用' : `${((t.size || 0) / 1048576).toFixed(2)} MB · 原路径直读`;
+    const sizeText = t.isOnlineRef ? 'MusicFree 在线流 · 0MB占用' : `${((t.size || 0) / 1048576).toFixed(2)} MB · 原路径直读`;
     div.innerHTML = `<div style="flex:1; cursor:pointer;" class="play-track"><div>${isActive ? '🔊 ' : ''}<span class="badge badge-fmt">${t.format || 'AUDIO'}</span> ${t.name}</div><div class="sub-text">${sizeText}</div></div><div style="display:flex; gap:4px;"><button class="btn btn-sm btn-outline ren-btn">改名</button><button class="btn btn-sm btn-danger del-btn">移除</button></div>`;
     div.querySelector('.play-track').onclick = () => playTrackAt(i);
     div.querySelector('.ren-btn').onclick = async () => { const nn = prompt('新歌名：', t.name); if (nn && nn.trim()) { t.name = nn.trim(); saveTracks(); if (i === currentTrackIdx) updateTrackUiHeader(t.name, t.format); await syncPlaylistWithoutInterrupt(); } };
@@ -1419,15 +1511,12 @@ function renderTracks() {
     list.appendChild(div);
   });
 }
-
 document.getElementById('nativeImportMusicBtn').addEventListener('click', async () => {
   if (Capacitor.isNativePlatform()) {
     try {
-      const res = await NativeTools.pickAudioRefs({ multiple: true });
-      const added = res.files || []; if (!added.length) return;
+      const res = await NativeTools.pickAudioRefs({ multiple: true }); const added = res.files || []; if (!added.length) return;
       added.forEach(f => tracks.push({ id: Date.now() + Math.random(), ...f }));
-      saveTracks(); await syncPlaylistWithoutInterrupt();
-      showToast(`✅ 已直读关联 ${added.length} 首（0MB复制，未打断播放）`);
+      saveTracks(); await syncPlaylistWithoutInterrupt(); showToast(`✅ 已直读关联 ${added.length} 首（0MB复制）`);
     } catch (e) { if (!String(e.message).includes('取消')) alert('导入失败：' + e.message); }
   } else document.getElementById('fallbackMusicInput').click();
 });
@@ -1435,6 +1524,7 @@ document.getElementById('fallbackMusicInput').addEventListener('change', (e) => 
   for (const file of e.target.files) tracks.push({ id: Date.now() + Math.random(), name: file.name, format: (file.name.split('.').pop() || 'AUDIO').toUpperCase(), size: file.size, webUrl: URL.createObjectURL(file) });
   e.target.value = ''; saveTracks();
 });
+
 // ==================== 8. A股专区 + 全球股市 + 可滑动走势图 ====================
 let marketData = { updatedAt: '加载中...', globalNews: [], indices: [], stocks: [] };
 let activeRegion = 'all', activeStockMkt = 'all';
@@ -1448,7 +1538,6 @@ function renderMiniSparkline(history, isUp, height = 40) {
   const color = isUp ? '#ef4444' : '#10b981', fill = isUp ? 'rgba(239,68,68,0.14)' : 'rgba(16,185,129,0.14)';
   return `<svg viewBox="0 0 ${w} ${height}" preserveAspectRatio="none" style="width:100%; height:${height}px; display:block;"><polygon points="${area}" fill="${fill}" /><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
 }
-
 function mountInteractiveChart(container, history, dates, isUp) {
   container.innerHTML = '';
   if (!history || history.length < 2) { container.innerHTML = '<div class="sub-text" style="padding:20px; text-align:center;">暂无走势</div>'; return; }
@@ -1476,7 +1565,6 @@ function mountInteractiveChart(container, history, dates, isUp) {
   svg.addEventListener('pointermove', (e) => { if (e.buttons > 0 || e.pointerType === 'mouse') handleMove(e.clientX); });
   container.appendChild(scrubBar); container.appendChild(chartBox);
 }
-
 async function fetchEastMoneyChart(emSecId, range) {
   const klt = range === '5d' ? 30 : (range === '1y' ? 102 : 101), lmt = range === '5d' ? 40 : (range === '3mo' ? 65 : (range === '1y' ? 52 : 25));
   const res = await httpGetJson(`https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${encodeURIComponent(emSecId)}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56&klt=${klt}&fqt=1&end=20500101&lmt=${lmt}`);
@@ -1510,7 +1598,6 @@ async function fetchSmartChart(item, range, interval) {
     throw e;
   }
 }
-
 function openStockDetailModal(item) {
   const isUp = (item.changePct || 0) >= 0, sign = isUp ? '+' : '', box = document.createElement('div');
   const newsHtml = (item.news || []).length ? item.news.map(n => `<a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener"><div style="font-weight:500;">${n.title}</div><div class="sub-text">${n.source || '财经'} · ${n.time || ''}</div></a>`).join('') : '<div class="sub-text">暂无快讯</div>';
@@ -1525,7 +1612,6 @@ function openStockDetailModal(item) {
   }));
   openModal(`${item.name} (${item.symbol})`, box);
 }
-
 function renderStocks(keyword = '') {
   document.getElementById('stockUpdated').textContent = '更新时间：' + (marketData.updatedAt || '--');
   const indices = (marketData.indices || []).filter(i => activeRegion === 'all' || i.region === activeRegion);
@@ -1535,7 +1621,6 @@ function renderStocks(keyword = '') {
     box.innerHTML = `<div style="font-size:12px; color:var(--sub);">${i.region} · ${i.name}</div><div style="display:flex; justify-content:space-between; align-items:baseline; margin:2px 0;"><span style="font-size:15px; font-weight:700;">${i.price}</span><span class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${sign}${i.changePct}%</span></div>${renderMiniSparkline(i.history, isUp, 36)}`;
     box.onclick = () => openStockDetailModal(i); idxGrid.appendChild(box);
   });
-
   const gnList = document.getElementById('globalNewsList'), gNews = marketData.globalNews || [];
   gnList.innerHTML = gNews.length ? gNews.map(n => `<a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener"><div style="font-size:13px;">${n.title}</div><div class="sub-text">${n.source} · ${n.time}</div></a>`).join('') : '<div class="sub-text">点击“刷新”获取每日头条</div>';
 
@@ -1547,28 +1632,24 @@ function renderStocks(keyword = '') {
     const isUp = (s.changePct || 0) >= 0, sign = isUp ? '+' : '';
     const newsItems = (s.news || []).slice(0, 4).map(n => `<a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener"><div>${n.title}</div><div class="sub-text">${n.source || ''} · ${n.time || ''}</div></a>`).join('');
     const div = document.createElement('div'); div.className = 'item-row'; div.style.flexDirection = 'column';
-    div.innerHTML = `<div style="display:flex; justify-content:space-between; width:100%; align-items:center; cursor:pointer;" class="st-head"><div><strong>${s.name}</strong> <span class="badge">${s.market || '全球'}</span><div class="sub-text">${s.symbol} · 点开或停顿0.85秒看大图</div></div><div style="text-align:right;"><div style="font-size:16px; font-weight:700;">${s.price}</div><div class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${sign}${s.changePct}%</div></div></div><div style="width:100%; cursor:pointer;" class="st-chart">${renderMiniSparkline(s.history, isUp, 44)}</div><div class="news-box" style="width:100%;"><div style="font-weight:600; margin-bottom:4px;">📰 每日消息汇总 (${(s.news || []).length}条)</div>${newsItems || '<div class="sub-text">暂无快讯</div>'}</div>`;
+    div.innerHTML = `<div style="display:flex; justify-content:space-between; width:100%; align-items:center; cursor:pointer;" class="st-head"><div><strong>${s.name}</strong> <span class="badge">${s.market || '全球'}</span><div class="sub-text">${s.symbol} · 点开看交互大图</div></div><div style="text-align:right;"><div style="font-size:16px; font-weight:700;">${s.price}</div><div class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${sign}${s.changePct}%</div></div></div><div style="width:100%; cursor:pointer;" class="st-chart">${renderMiniSparkline(s.history, isUp, 44)}</div><div class="news-box" style="width:100%;"><div style="font-weight:600; margin-bottom:4px;">📰 每日消息汇总 (${(s.news || []).length}条)</div>${newsItems || '<div class="sub-text">暂无快讯</div>'}</div>`;
     div.querySelector('.st-head').onclick = () => openStockDetailModal(s);
     div.querySelector('.st-chart').onclick = () => openStockDetailModal(s);
     list.appendChild(div);
   });
 }
-
 function mapEastMoneyToSymbol(item) {
   const code = String(item.Code || ''), mkt = String(item.MktNum || '');
-  if (mkt === '1') return `${code}.SS`;
-  if (mkt === '0') return `${code}.SZ`;
+  if (mkt === '1') return `${code}.SS`; if (mkt === '0') return `${code}.SZ`;
   if (mkt === '116') return `${(code.length === 5 && code.startsWith('0') ? code.slice(1) : code.padStart(4, '0'))}.HK`;
   return code;
 }
-
 async function liveSearchGlobalStock(query) {
   const q = query.trim(), resBox = document.getElementById('liveSearchResult');
   if (!q) { resBox.innerHTML = ''; return; }
   resBox.innerHTML = '<div class="card" style="background:var(--primary-light);">🔍 正在全网检索 A股 / 港股 / 美股 / 全球个股与板块...</div>';
   const candidates = [], seen = new Set();
   const pushCand = (c) => { if (c.symbol && !seen.has(c.symbol.toUpperCase())) { seen.add(c.symbol.toUpperCase()); candidates.push(c); } };
-
   try {
     const emData = await httpGetJson(`https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(q)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=12`);
     const rows = emData?.QuotationCodeTable?.Data || [];
@@ -1579,7 +1660,6 @@ async function liveSearchGlobalStock(query) {
     const yfData = await httpGetJson(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=6&newsCount=2`);
     (yfData.quotes || []).forEach(qt => { if (qt.symbol) pushCand({ symbol: qt.symbol, emSecId: '', name: qt.shortname || qt.longname || qt.symbol, market: qt.exchDisp || qt.exchange || '全球' }); });
   } catch {}
-
   if (!candidates.length) { resBox.innerHTML = '<div class="sub-text" style="padding:8px;">未找到匹配股票。</div>'; return; }
   resBox.innerHTML = '<div class="sub-text" style="margin-bottom:6px;">🌐 全网检索结果（个股优先）：</div>';
   candidates.slice(0, 10).forEach(cand => {
@@ -1589,8 +1669,7 @@ async function liveSearchGlobalStock(query) {
     row.onclick = async () => {
       row.querySelector('button').textContent = '加载中...';
       try {
-        const chartInfo = await fetchSmartChart(cand, '1mo', '1d');
-        let newsList = [];
+        const chartInfo = await fetchSmartChart(cand, '1mo', '1d'); let newsList = [];
         try {
           const xmlText = await httpGetText(`https://news.google.com/rss/search?q=${encodeURIComponent(cand.name + ' 股价 新闻')}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`);
           const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
@@ -1599,15 +1678,13 @@ async function liveSearchGlobalStock(query) {
         const fullStock = { ...cand, ...chartInfo, news: newsList };
         openStockDetailModal(fullStock);
         customWatchlist = [fullStock, ...customWatchlist.filter(x => x.symbol !== fullStock.symbol)].slice(0, 12);
-        localStorage.setItem('custom_watchlist_v1', JSON.stringify(customWatchlist));
-        renderStocks('');
+        localStorage.setItem('custom_watchlist_v1', JSON.stringify(customWatchlist)); renderStocks('');
       } catch (err) { alert('拉取走势失败：' + err.message); }
       finally { row.querySelector('button').textContent = '看态势图'; }
     };
     resBox.appendChild(row);
   });
 }
-
 async function fetchMarketData(withToast = false) {
   const repo = localStorage.getItem('github_stock_repo') || DEFAULT_GITHUB_REPO;
   document.getElementById('stockUpdated').textContent = `正在同步 ${repo} 股市...`;
@@ -1621,15 +1698,8 @@ async function fetchMarketData(withToast = false) {
   }
   renderStocks(document.getElementById('stockSearch').value);
 }
-
-document.querySelectorAll('#regionTabs .day-pill').forEach(btn => btn.addEventListener('click', () => {
-  document.querySelectorAll('#regionTabs .day-pill').forEach(b => b.classList.remove('active')); btn.classList.add('active');
-  activeRegion = btn.dataset.region; renderStocks(document.getElementById('stockSearch').value);
-}));
-document.querySelectorAll('#stockMarketTabs .day-pill').forEach(btn => btn.addEventListener('click', () => {
-  document.querySelectorAll('#stockMarketTabs .day-pill').forEach(b => b.classList.remove('active')); btn.classList.add('active');
-  activeStockMkt = btn.dataset.mkt; renderStocks(document.getElementById('stockSearch').value);
-}));
+document.querySelectorAll('#regionTabs .day-pill').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('#regionTabs .day-pill').forEach(b => b.classList.remove('active')); btn.classList.add('active'); activeRegion = btn.dataset.region; renderStocks(document.getElementById('stockSearch').value); }));
+document.querySelectorAll('#stockMarketTabs .day-pill').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('#stockMarketTabs .day-pill').forEach(b => b.classList.remove('active')); btn.classList.add('active'); activeStockMkt = btn.dataset.mkt; renderStocks(document.getElementById('stockSearch').value); }));
 document.getElementById('refreshStocksBtn').addEventListener('click', () => fetchMarketData(true));
 document.getElementById('stockSearch').addEventListener('input', (e) => renderStocks(e.target.value));
 document.getElementById('stockSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') liveSearchGlobalStock(e.target.value); });
@@ -1639,34 +1709,23 @@ document.getElementById('configRepoBtn').addEventListener('click', () => {
   if (val && val.trim()) { localStorage.setItem('github_stock_repo', val.trim()); fetchMarketData(true); }
 });
 
-// ==================== 9. 词典级翻译 + 零位移双击跳译 ====================
+// ==================== 9. 词典级翻译 + 零位移双击跳译 + Umi-OCR 识图翻译 ====================
 let transHistory = JSON.parse(localStorage.getItem('trans_hist_v1') || '[]');
-let lastSrcText = '', lastSrcLang = 'en', lastTransResult = '', lastDstLang = 'zh-CN';
-let translateReqSeq = 0;
+let lastSrcText = '', lastSrcLang = 'en', lastTransResult = '', lastDstLang = 'zh-CN', translateReqSeq = 0;
 
 function decodeHtmlEntities(str) {
-  return (str || '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&apos;|&#39;|&#x27;/gi, "'")
-    .replace(/&quot;|&#34;/gi, '"')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
+  return (str || '').replace(/&nbsp;/g, ' ').replace(/&apos;|&#39;|&#x27;/gi, "'").replace(/&quot;|&#34;/gi, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
 }
-
 function wrapDoubleTapWords(sentence) {
   const decoded = decodeHtmlEntities(sentence);
   return decoded.split(/([A-Za-z]+(?:['’-][A-Za-z]+)*)/g).map((part, idx) => {
     if (idx % 2 === 1) {
       const cleanWord = part.replace(/’/g, "'");
-      const safeAttr = cleanWord.replace(/"/g, '&quot;');
-      const safeText = part.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      return `<span class="tap-word" data-word="${safeAttr}">${safeText}</span>`;
+      return `<span class="tap-word" data-word="${cleanWord.replace(/"/g, '&quot;')}">${part.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>`;
     }
     return part.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }).join('');
 }
-
 function detectSimpleLang(text, selectedFrom) {
   if (selectedFrom && selectedFrom !== 'auto') return selectedFrom;
   if (/[\u4e00-\u9fa5]/.test(text)) return 'zh-CN';
@@ -1674,7 +1733,6 @@ function detectSimpleLang(text, selectedFrom) {
   if (/[\uac00-\ud7af]/.test(text)) return 'ko';
   return 'en';
 }
-
 function renderTransHistory() {
   const list = document.getElementById('transHistory');
   if (!transHistory.length) { list.innerHTML = '<div class="sub-text" style="text-align:center;">暂无查词记录</div>'; return; }
@@ -1686,7 +1744,6 @@ function renderTransHistory() {
     list.appendChild(div);
   });
 }
-
 async function fetchRichDictionary(query) {
   const rich = { ukPhone: '', usPhone: '', meanings: [], phrases: [], examples: [] };
   try {
@@ -1699,16 +1756,11 @@ async function fetchRichDictionary(query) {
     const ceWord = yd?.ce?.word?.[0];
     if (ceWord && !rich.meanings.length) {
       if (ceWord.phone) rich.usPhone = ceWord.phone;
-      (ceWord.trs || []).forEach(tr => {
-        const txt = (tr?.tr?.[0]?.l?.i || []).map(p => typeof p === 'string' ? p : (p['#text'] || '')).join('').trim();
-        if (txt) rich.meanings.push(txt);
-      });
+      (ceWord.trs || []).forEach(tr => { const txt = (tr?.tr?.[0]?.l?.i || []).map(p => typeof p === 'string' ? p : (p['#text'] || '')).join('').trim(); if (txt) rich.meanings.push(txt); });
     }
     (yd?.phrs?.phrs || []).slice(0, 8).forEach(p => { const en = p?.phr?.headword?.l?.i, zh = p?.phr?.trs?.[0]?.tr?.l?.i; if (en && zh) rich.phrases.push({ en, zh }); });
     (yd?.blng_sents_part?.['sentence-pair'] || []).slice(0, 6).forEach(sp => {
-      const rawEn = sp.sentence || sp['sentence-eng'] || '';
-      const rawZh = sp['sentence-translation'] || '';
-      const en = rawEn.replace(/<[^>]+>/g, ''), zh = rawZh.replace(/<[^>]+>/g, '');
+      const en = (sp.sentence || sp['sentence-eng'] || '').replace(/<[^>]+>/g, ''), zh = (sp['sentence-translation'] || '').replace(/<[^>]+>/g, '');
       if (en) rich.examples.push({ en, zh });
     });
   } catch {}
@@ -1724,10 +1776,8 @@ async function fetchRichDictionary(query) {
   }
   return rich;
 }
-
 function renderRichDictBox(rich) {
-  const box = document.getElementById('dictRichBox');
-  box.innerHTML = '';
+  const box = document.getElementById('dictRichBox'); box.innerHTML = '';
   if (!rich.ukPhone && !rich.usPhone && !rich.meanings.length && !rich.phrases.length && !rich.examples.length) return;
   if (rich.ukPhone || rich.usPhone) {
     const phDiv = document.createElement('div'); phDiv.className = 'dict-sec';
@@ -1741,7 +1791,7 @@ function renderRichDictBox(rich) {
   }
   if (rich.phrases.length) {
     const pDiv = document.createElement('div'); pDiv.className = 'dict-sec';
-    pDiv.innerHTML = `<div class="dict-sec-title">🔗 常用短语（点击或停顿0.85秒查词）</div>`;
+    pDiv.innerHTML = `<div class="dict-sec-title">🔗 常用短语（点击直接查词）</div>`;
     rich.phrases.forEach(ph => {
       const chip = document.createElement('span'); chip.className = 'phrase-chip';
       chip.innerHTML = `<strong>${ph.en}</strong> <span class="sub-text">${ph.zh}</span>`;
@@ -1752,7 +1802,7 @@ function renderRichDictBox(rich) {
   }
   if (rich.examples.length) {
     const eDiv = document.createElement('div'); eDiv.className = 'dict-sec';
-    eDiv.innerHTML = `<div class="dict-sec-title">💬 双语例句（👆 双击任意英文单词直接跳译，或停顿0.85秒）</div>`;
+    eDiv.innerHTML = `<div class="dict-sec-title">💬 双语例句（👆 双击任意英文单词直接跳译）</div>`;
     rich.examples.forEach(ex => {
       const item = document.createElement('div'); item.className = 'example-item';
       item.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;"><div style="flex:1;">${wrapDoubleTapWords(ex.en)}</div><button class="btn btn-sm btn-outline ex-speak" title="朗读例句">🔊</button></div>${ex.zh ? `<div class="sub-text">${ex.zh}</div>` : ''}`;
@@ -1763,137 +1813,64 @@ function renderRichDictBox(rich) {
   }
 }
 
-let primedWordEl = null;
-let primedWordText = '';
-let primedWordTime = 0;
-let primedClearTimer = null;
-let wordTouchStartX = 0;
-let wordTouchStartY = 0;
-let wordTouchStartScrollY = 0;
-let lastTouchWordTime = 0;
-let lastWordJumpAt = 0;
-
-function findTapWord(target) {
-  const el = target instanceof Element ? target : target?.parentElement;
-  return el ? el.closest('.tap-word') : null;
-}
-
-function clearPrimedWord() {
-  if (primedClearTimer) { clearTimeout(primedClearTimer); primedClearTimer = null; }
-  if (primedWordEl) primedWordEl.classList.remove('primed');
-  primedWordEl = null;
-  primedWordText = '';
-  primedWordTime = 0;
-}
-
+let primedWordEl = null, primedWordText = '', primedWordTime = 0, primedClearTimer = null;
+let wordTouchStartX = 0, wordTouchStartY = 0, wordTouchStartScrollY = 0, lastTouchWordTime = 0, lastWordJumpAt = 0;
+function findTapWord(target) { const el = target instanceof Element ? target : target?.parentElement; return el ? el.closest('.tap-word') : null; }
+function clearPrimedWord() { if (primedClearTimer) { clearTimeout(primedClearTimer); primedClearTimer = null; } if (primedWordEl) primedWordEl.classList.remove('primed'); primedWordEl = null; primedWordText = ''; primedWordTime = 0; }
 function jumpTranslateWord(wordEl) {
-  const raw = wordEl?.dataset?.word || wordEl?.textContent || '';
-  const w = raw.trim().replace(/^['"-]+|['"-]+$/g, '');
+  const w = (wordEl?.dataset?.word || wordEl?.textContent || '').trim().replace(/^['"-]+|['"-]+$/g, '');
   if (!w) return;
-
-  lastWordJumpAt = Date.now();
-  clearPrimedWord();
-  cancelSlideDwell();
-  hideFingerOrb();
-
-  wordEl.classList.add('flash');
-  setTimeout(() => wordEl.classList.remove('flash'), 260);
+  lastWordJumpAt = Date.now(); clearPrimedWord();
+  wordEl.classList.add('flash'); setTimeout(() => wordEl.classList.remove('flash'), 260);
   if (navigator.vibrate) navigator.vibrate(18);
   showToast(`🔍 正在跳转翻译「${w}」`, 1600);
-
-  const inputEl = document.getElementById('transInput');
-  const outEl = document.getElementById('transOutput');
-  inputEl.value = w;
+  document.getElementById('transInput').value = w;
   document.getElementById('transFrom').value = 'en';
   document.getElementById('transTo').value = 'zh-CN';
-
   window.scrollTo({ top: 0, behavior: 'smooth' });
-  if (outEl) {
-    outEl.classList.remove('jump-pulse');
-    requestAnimationFrame(() => outEl.classList.add('jump-pulse'));
-    setTimeout(() => outEl.classList.remove('jump-pulse'), 650);
-  }
+  const outEl = document.getElementById('transOutput');
+  if (outEl) { outEl.classList.remove('jump-pulse'); requestAnimationFrame(() => outEl.classList.add('jump-pulse')); setTimeout(() => outEl.classList.remove('jump-pulse'), 650); }
   doTranslate(false);
 }
-
 function handleTapWordActivation(span, evt) {
-  const raw = span?.dataset?.word || span?.textContent || '';
-  const w = raw.trim().replace(/^['"-]+|['"-]+$/g, '');
+  const w = (span?.dataset?.word || span?.textContent || '').trim().replace(/^['"-]+|['"-]+$/g, '');
   if (!w) return;
-  const now = Date.now();
-  if (now - lastWordJumpAt < 400) return;
-
-  const isSameWord = (span === primedWordEl) || (primedWordText && w.toLowerCase() === primedWordText.toLowerCase());
-  if (isSameWord && now - primedWordTime < 750) {
-    if (evt && evt.cancelable) evt.preventDefault();
-    jumpTranslateWord(span);
-  } else {
-    clearPrimedWord();
-    primedWordEl = span;
-    primedWordText = w;
-    primedWordTime = now;
-    span.classList.add('primed');
+  const now = Date.now(); if (now - lastWordJumpAt < 400) return;
+  const isSame = (span === primedWordEl) || (primedWordText && w.toLowerCase() === primedWordText.toLowerCase());
+  if (isSame && now - primedWordTime < 750) { if (evt && evt.cancelable) evt.preventDefault(); jumpTranslateWord(span); }
+  else {
+    clearPrimedWord(); primedWordEl = span; primedWordText = w; primedWordTime = now; span.classList.add('primed');
     showToast(`👆 再点一下「${w}」跳转查词`, 1100);
-    primedClearTimer = setTimeout(() => {
-      if (primedWordEl === span) clearPrimedWord();
-    }, 780);
+    primedClearTimer = setTimeout(() => { if (primedWordEl === span) clearPrimedWord(); }, 780);
   }
 }
-
 const dictRichBoxEl = document.getElementById('dictRichBox');
-dictRichBoxEl.addEventListener('touchstart', (e) => {
-  if (e.touches[0]) {
-    wordTouchStartX = e.touches[0].clientX;
-    wordTouchStartY = e.touches[0].clientY;
-    wordTouchStartScrollY = window.scrollY;
-  }
-}, { passive: true });
-
+dictRichBoxEl.addEventListener('touchstart', (e) => { if (e.touches[0]) { wordTouchStartX = e.touches[0].clientX; wordTouchStartY = e.touches[0].clientY; wordTouchStartScrollY = window.scrollY; } }, { passive: true });
 dictRichBoxEl.addEventListener('touchend', (e) => {
-  const span = findTapWord(e.target);
-  if (!span) return;
+  const span = findTapWord(e.target); if (!span) return;
   const t = e.changedTouches[0];
   if (t && Math.hypot(t.clientX - wordTouchStartX, t.clientY - wordTouchStartY) > 28) return;
   if (Math.abs(window.scrollY - wordTouchStartScrollY) > 10) return;
-  lastTouchWordTime = Date.now();
-  handleTapWordActivation(span, e);
+  lastTouchWordTime = Date.now(); handleTapWordActivation(span, e);
 }, { passive: false });
-
-dictRichBoxEl.addEventListener('click', (e) => {
-  if (Date.now() - lastTouchWordTime < 450) return;
-  const span = findTapWord(e.target);
-  if (span) handleTapWordActivation(span, e);
-});
-
-dictRichBoxEl.addEventListener('dblclick', (e) => {
-  if (Date.now() - lastWordJumpAt < 400) return;
-  const span = findTapWord(e.target);
-  if (span) {
-    e.preventDefault();
-    jumpTranslateWord(span);
-  }
-});
+dictRichBoxEl.addEventListener('click', (e) => { if (Date.now() - lastTouchWordTime < 450) return; const span = findTapWord(e.target); if (span) handleTapWordActivation(span, e); });
+dictRichBoxEl.addEventListener('dblclick', (e) => { if (Date.now() - lastWordJumpAt < 400) return; const span = findTapWord(e.target); if (span) { e.preventDefault(); jumpTranslateWord(span); } });
 
 async function speakSingle(text, lang) {
   if (!text) return;
   if (Capacitor.isNativePlatform()) { try { await NativeTools.speakText({ text, lang }); } catch (e) { alert('朗读失败：' + e.message); } }
   else if ('speechSynthesis' in window) { const u = new SpeechSynthesisUtterance(text); u.lang = lang; speechSynthesis.speak(u); }
 }
-
 async function doTranslate(withToast = false) {
   const text = document.getElementById('transInput').value.trim();
   if (!text) { if (withToast) showToast('请先输入要翻译的内容'); return; }
-  const reqSeq = ++translateReqSeq;
-  const from = document.getElementById('transFrom').value;
+  const reqSeq = ++translateReqSeq, from = document.getElementById('transFrom').value;
   let to = document.getElementById('transTo').value;
   if (from === 'auto' && to === 'en' && /^[a-zA-Z0-9\s.,!?;:'"()-]+$/.test(text)) { to = 'zh-CN'; document.getElementById('transTo').value = 'zh-CN'; }
   const srcLang = detectSimpleLang(text, from);
   lastSrcText = text; lastSrcLang = srcLang; lastDstLang = to;
-
   const outEl = document.getElementById('transOutput');
-  outEl.textContent = '🌐 正在查词与翻译...';
-  document.getElementById('dictRichBox').innerHTML = '';
-  clearPrimedWord();
+  outEl.textContent = '🌐 正在查词与翻译...'; document.getElementById('dictRichBox').innerHTML = ''; clearPrimedWord();
 
   let translated = '';
   const richPromise = text.length <= 45 ? fetchRichDictionary(text) : Promise.resolve(null);
@@ -1902,25 +1879,18 @@ async function doTranslate(withToast = false) {
     if (Array.isArray(g?.[0])) translated = g[0].map(seg => seg?.[0] || '').join('');
   } catch {}
   if (!translated) {
-    try {
-      const mm = await httpGetJson(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text.slice(0, 480))}&langpair=${encodeURIComponent(srcLang + '|' + to)}`);
-      translated = mm?.responseData?.translatedText || '';
-    } catch {}
+    try { const mm = await httpGetJson(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text.slice(0, 480))}&langpair=${encodeURIComponent(srcLang + '|' + to)}`); translated = mm?.responseData?.translatedText || ''; } catch {}
   }
   const rich = await richPromise;
   if (reqSeq !== translateReqSeq) return;
-
   if (!translated && rich?.meanings?.length) translated = rich.meanings[0];
   if (!translated) { outEl.textContent = '翻译失败，请检查网络连接后重试。'; return; }
 
-  lastTransResult = translated;
-  outEl.textContent = translated;
+  lastTransResult = translated; outEl.textContent = translated;
   if (rich) renderRichDictBox(rich);
   if (withToast) showToast('✅ 翻译结果已刷新');
-
   transHistory = [{ src: text.slice(0, 120), dst: translated.slice(0, 160) }, ...transHistory.filter(x => x.src !== text.slice(0, 120))].slice(0, 20);
-  localStorage.setItem('trans_hist_v1', JSON.stringify(transHistory));
-  renderTransHistory();
+  localStorage.setItem('trans_hist_v1', JSON.stringify(transHistory)); renderTransHistory();
 }
 
 document.getElementById('doTranslateBtn').addEventListener('click', () => doTranslate(false));
@@ -1931,33 +1901,43 @@ document.getElementById('clearTransBtn').addEventListener('click', () => {
 });
 document.getElementById('swapLangBtn').addEventListener('click', () => {
   const f = document.getElementById('transFrom'), t = document.getElementById('transTo');
-  if (f.value === 'auto') { f.value = t.value; t.value = t.value === 'zh-CN' ? 'en' : 'zh-CN'; }
-  else { const tmp = f.value; f.value = t.value; t.value = tmp; }
+  if (f.value === 'auto') { f.value = t.value; t.value = t.value === 'zh-CN' ? 'en' : 'zh-CN'; } else { const tmp = f.value; f.value = t.value; t.value = tmp; }
 });
 document.getElementById('copyTransBtn').addEventListener('click', async () => {
   if (!lastTransResult) return;
-  try { await navigator.clipboard.writeText(lastTransResult); showToast('📋 已复制译文'); }
-  catch { prompt('请长按复制译文：', lastTransResult); }
+  try { await navigator.clipboard.writeText(lastTransResult); showToast('📋 已复制译文'); } catch { prompt('请长按复制译文：', lastTransResult); }
 });
 document.getElementById('speakSrcBtn').addEventListener('click', () => speakSingle(lastSrcText, lastSrcLang));
 document.getElementById('speakTransBtn').addEventListener('click', () => speakSingle(lastTransResult, lastDstLang));
 document.getElementById('speakBothBtn').addEventListener('click', async () => {
   if (!lastSrcText || !lastTransResult) return;
-  if (Capacitor.isNativePlatform()) {
-    try { await NativeTools.speakPair({ text1: lastSrcText, lang1: lastSrcLang, text2: lastTransResult, lang2: lastDstLang }); }
-    catch (e) { alert('连读失败：' + e.message); }
-  } else { speakSingle(lastSrcText, lastSrcLang); setTimeout(() => speakSingle(lastTransResult, lastDstLang), 1500); }
+  if (Capacitor.isNativePlatform()) { try { await NativeTools.speakPair({ text1: lastSrcText, lang1: lastSrcLang, text2: lastTransResult, lang2: lastDstLang }); } catch (e) { alert('连读失败：' + e.message); } }
+  else { speakSingle(lastSrcText, lastSrcLang); setTimeout(() => speakSingle(lastTransResult, lastDstLang), 1500); }
 });
 document.getElementById('clearTransHistBtn').addEventListener('click', () => { transHistory = []; localStorage.setItem('trans_hist_v1', '[]'); renderTransHistory(); });
-document.getElementById('ocrTranslateBtn').addEventListener('click', async () => {
-  if (!Capacitor.isNativePlatform()) return alert('请在安卓 App 中使用识图翻译！');
+
+async function runOcrAndTranslate(fileRecord) {
+  const outEl = document.getElementById('transOutput');
+  outEl.textContent = `🧠 Umi-OCR 正在识别文字 (${umiOcrConfig.serverUrl})...`;
   try {
-    const res = await NativeTools.pickFiles({ accept: '*/*', multiple: false });
-    const f = res.files?.[0]; if (!f) return;
-    document.getElementById('transOutput').textContent = '🧠 正在离线识别文字...';
-    const ex = await NativeTools.extractText({ localPath: f.localPath });
-    if (ex.text) { document.getElementById('transInput').value = ex.text; await doTranslate(false); }
-    else alert('未识别到文字');
+    const txt = await extractTextViaUmiOcr(fileRecord, (m) => { outEl.textContent = m; });
+    if (txt && txt.trim()) { document.getElementById('transInput').value = txt.trim(); await doTranslate(false); }
+    else { outEl.textContent = 'Umi-OCR 未在图中检测到文字。'; showToast('未识别到文字'); }
+  } catch (e) {
+    outEl.textContent = '译文将显示在这里...';
+    showUmiOcrErrorModal(e.message);
+  }
+}
+
+document.getElementById('ocrTranslateBtn').addEventListener('click', async () => {
+  try {
+    if (Capacitor.isNativePlatform()) {
+      const res = await NativeTools.pickFiles({ accept: '*/*', multiple: false });
+      if (res.files?.[0]) await runOcrAndTranslate(res.files[0]);
+    } else {
+      pendingWebOcrCallback = (rec) => runOcrAndTranslate(rec);
+      document.getElementById('fallbackOcrFileInput').click();
+    }
   } catch (e) { if (!String(e.message).includes('取消')) alert('识图翻译失败：' + e.message); }
 });
 
@@ -1965,16 +1945,10 @@ document.getElementById('ocrTranslateBtn').addEventListener('click', async () =>
 let lastAutoSyncTime = 0;
 async function autoSyncOnAppEnter() {
   lastAutoSyncTime = Date.now();
-  await Promise.allSettled([
-    detectDeviceAndNetworkZones(false),
-    fetchMarketData(false)
-  ]);
+  await Promise.allSettled([detectDeviceAndNetworkZones(false), fetchMarketData(false)]);
 }
-
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && Date.now() - lastAutoSyncTime > 45000) {
-    autoSyncOnAppEnter();
-  }
+  if (document.visibilityState === 'visible' && Date.now() - lastAutoSyncTime > 45000) autoSyncOnAppEnter();
 });
 
 (async function bootstrap() {
@@ -1987,6 +1961,7 @@ document.addEventListener('visibilitychange', () => {
   renderCourses();
   renderExams();
   renderFiles();
+  renderMfSourceTabs();
   renderTracks();
   renderOnlineHistoryBox();
   renderTransHistory();
