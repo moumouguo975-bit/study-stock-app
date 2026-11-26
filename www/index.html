@@ -123,6 +123,11 @@
     .card-title { font-size: 1.07em; font-weight: 600; margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap; }
     .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .form-full { grid-column: 1 / -1; }
+    .week-switcher {
+      display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
+      padding: 6px 8px; border-radius: 10px;
+      background: var(--card-sub); border: 1px solid var(--border);
+    }
     input, select, textarea {
       width: 100%; padding: 9px 10px; border: 1px solid var(--border);
       border-radius: 8px; font-size: 1em; background: var(--card-sub); color: var(--text);
@@ -166,7 +171,6 @@
     body.dark-mode .badge-fmt { background: #475569; }
     .sub-text { font-size: 12px; color: var(--sub); margin-top: 3px; line-height: 1.45; }
 
-    /* 今日双时区时钟 + 互动天气仪表盘 */
     .dash-card {
       background: linear-gradient(135deg, var(--primary), #1d4ed8);
       color: #fff; border-radius: 16px; padding: 14px; margin-bottom: 12px;
@@ -212,7 +216,6 @@
       background: rgba(0, 0, 0, 0.18); font-size: 12px; line-height: 1.55;
     }
 
-    /* 股市与交互走势图 */
     .idx-scroll { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
     .idx-box { background: var(--card-sub); border: 1px solid var(--border); border-radius: 10px; padding: 10px; cursor: pointer; }
     .up { color: var(--up); font-weight: 600; }
@@ -224,26 +227,12 @@
     .chart-interactive { position: relative; width: 100%; touch-action: none; user-select: none; background: var(--card-sub); border-radius: 8px; padding: 6px; border: 1px solid var(--border); }
     .scrub-bar { display: flex; justify-content: space-between; align-items: center; font-size: 12px; background: var(--primary-light); color: var(--text); padding: 6px 10px; border-radius: 8px; margin-bottom: 6px; font-weight: 500; }
 
-    /* MusicFree 音乐引擎、歌词与音效 */
-    .music-hist-box {
-      background: var(--card-sub);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 8px 10px;
-      margin-bottom: 10px;
-    }
+    .music-hist-box { background: var(--card-sub); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; }
     .lyric-box {
-      margin-top: 8px;
-      padding: 8px 10px;
-      border-radius: 8px;
-      background: var(--card);
-      border: 1px solid var(--border);
-      max-height: 112px;
-      overflow-y: auto;
-      text-align: center;
-      font-size: 12px;
-      line-height: 1.75;
-      color: var(--sub);
+      margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+      background: var(--card); border: 1px solid var(--border);
+      max-height: 112px; overflow-y: auto; text-align: center;
+      font-size: 12px; line-height: 1.75; color: var(--sub);
     }
     .lyric-line { padding: 1px 4px; border-radius: 6px; transition: color 0.15s, background 0.15s; }
     .lyric-line.active { color: var(--primary); font-weight: 700; background: var(--primary-light); }
@@ -260,7 +249,6 @@
     .eq-slider-row { display: grid; grid-template-columns: 46px 1fr 38px; align-items: center; gap: 6px; font-size: 12px; margin-top: 4px; }
     .cover-img { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; flex-shrink: 0; background: var(--border); }
 
-    /* 词典与零位移双击跳译单词 */
     .trans-out {
       min-height: 76px; background: var(--card-sub); border: 1px solid var(--border);
       border-radius: 10px; padding: 12px; font-size: 1.08em; line-height: 1.6;
@@ -274,22 +262,60 @@
       display: inline-block; margin: 3px 4px 3px 0; padding: 4px 8px; border-radius: 8px;
       background: var(--card-sub); border: 1px solid var(--border); font-size: 12px; cursor: pointer;
     }
-    .example-item { padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 13px; line-height: 1.8; }
+    .example-item { padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 13px; line-height: 1.9; }
     .example-item:last-child { border-bottom: none; }
     .tap-word {
-      display: inline-block; padding: 1px 3px; margin: 0 0.5px; border-radius: 5px; cursor: pointer;
+      display: inline-block; padding: 2px 4px; margin: 0 0.5px; border-radius: 5px; cursor: pointer;
       user-select: none; -webkit-user-select: none; touch-action: manipulation;
       transition: background 0.12s, color 0.12s, box-shadow 0.12s;
     }
     .tap-word.primed { background: var(--primary-light); color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
     .tap-word.flash { background: var(--primary); color: #fff; }
 
-    /* 颜色选择圆点 */
+    /* 可对话 AI 小熊猫悬浮桌宠（贴边自动吸附半隐藏） */
+    #pandaPet {
+      position: fixed;
+      z-index: 85;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 255, 255, 0.88);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 2px solid rgba(79, 70, 229, 0.35);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+      cursor: pointer;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      transition: left 0.24s cubic-bezier(0.22, 1, 0.36, 1), top 0.24s ease, transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease;
+    }
+    body.dark-mode #pandaPet {
+      background: rgba(30, 41, 59, 0.88);
+      border-color: rgba(148, 163, 184, 0.45);
+    }
+    #pandaPet.dragging {
+      transition: none !important;
+      transform: scale(1.08) !important;
+      opacity: 1 !important;
+    }
+    #pandaPet.dock-hidden.dock-left {
+      transform: translateX(-30px) rotate(12deg);
+      opacity: 0.78;
+    }
+    #pandaPet.dock-hidden.dock-right {
+      transform: translateX(30px) rotate(-12deg);
+      opacity: 0.78;
+    }
+    #pandaPet svg { width: 44px; height: 44px; pointer-events: none; }
+
     .swatch-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     .swatch { width: 30px; height: 30px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--border); cursor: pointer; }
     .swatch.active { box-shadow: 0 0 0 3px var(--text); }
 
-    /* 弹窗与响铃 */
     .thumb { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
     .modal { display: none; position: fixed; inset: 0; z-index: 100; background: rgba(0, 0, 0, 0.72); justify-content: center; align-items: center; padding: 14px; }
     .modal.open { display: flex; }
@@ -313,7 +339,6 @@
     }
     #toastTip.show { opacity: 1; }
 
-    /* 底部 6 栏导航（1:1 连续跟手液态毛玻璃胶囊） */
     nav {
       position: fixed; bottom: 0; left: 0; right: 0; height: 66px;
       background: var(--card); border-top: 1px solid var(--border);
@@ -370,9 +395,7 @@
         <div class="city-bar" id="cityTabs"></div>
         <button class="city-pill" id="refreshWeatherBtn" style="flex-shrink:0;">🔄 刷新</button>
       </div>
-
       <div class="dual-tz-bar" id="dualTzBar"></div>
-
       <div class="dash-top">
         <div>
           <div class="clock-big" id="liveClock">--:--:--</div>
@@ -385,26 +408,19 @@
           <div class="dash-sub" id="weatherDetail">湿度 --% · 降水 --%</div>
         </div>
       </div>
-
-      <div class="weather-section-label">
-        <span>🕒 未来24小时天气时报（点击或滑过查看详情）</span>
-      </div>
+      <div class="weather-section-label"><span>🕒 未来24小时天气时报（点击查看详情）</span></div>
       <div class="scroll-strip" id="hourlyStrip"></div>
-
-      <div class="weather-section-label">
-        <span>📆 未来7天天气预报（点击或滑过查看建议）</span>
-      </div>
+      <div class="weather-section-label"><span>📆 未来7天天气预报（点击查看建议）</span></div>
       <div class="scroll-strip" id="dailyStrip"></div>
-
       <div class="advice-box" id="smartAdviceBox">💡 正在生成结合当地天气与课表的智能建议...</div>
     </div>
 
     <div class="card">
       <div class="card-title">
-        <span>添加课程</span>
+        <span>添加课程（支持起止周/单双周）</span>
         <div style="display:flex; gap:6px;">
-          <button class="btn btn-sm btn-green" id="smartImportCourseBtn">📷 Umi-OCR 识课表</button>
-          <button class="btn btn-sm btn-outline" id="openBatchCourseBtn">📋 文本导入</button>
+          <button class="btn btn-sm btn-green" id="smartImportCourseBtn">📷 识图导入</button>
+          <button class="btn btn-sm btn-outline" id="openBatchCourseBtn">📋 批量导入</button>
         </div>
       </div>
       <div class="form-grid">
@@ -418,6 +434,15 @@
         <input id="cRoom" placeholder="教室/地点" />
         <input id="cStart" type="time" value="08:00" />
         <input id="cEnd" type="time" value="09:40" />
+        <input id="cWeekStart" type="number" min="1" max="30" value="1" placeholder="起始周(如 1)" />
+        <input id="cWeekEnd" type="number" min="1" max="30" value="16" placeholder="结束周(如 16)" />
+        <select id="cWeekType" class="form-full">
+          <option value="all" selected>📅 每周都上（起止周内全周）</option>
+          <option value="odd">1️⃣ 仅单周上课（如 1,3,5...周）</option>
+          <option value="even">2️⃣ 仅双周上课（如 2,4,6...周）</option>
+          <option value="custom">✏️ 自定义周次（如 1,3,5,8-12）</option>
+        </select>
+        <input id="cCustomWeeks" class="form-full" style="display:none;" placeholder="输入自定义周次，如 1,3,5,8-12" />
         <select id="cAdvance">
           <option value="15">提前15分钟</option><option value="30">提前30分钟</option>
           <option value="10">提前10分钟</option><option value="5">提前5分钟</option>
@@ -435,6 +460,12 @@
     </div>
 
     <div class="card">
+      <div class="week-switcher">
+        <button class="btn btn-sm btn-outline" id="prevWeekBtn">◀</button>
+        <select id="viewWeekSelect" style="flex:1; padding:6px 8px; font-size:13px;"></select>
+        <button class="btn btn-sm btn-outline" id="nextWeekBtn">▶</button>
+        <button class="btn btn-sm btn-green" id="openTermCfgBtn" style="white-space:nowrap;">⚙️ 学期</button>
+      </div>
       <div class="day-tabs" id="dayTabs"></div>
       <div id="courseList"></div>
     </div>
@@ -445,7 +476,10 @@
     <div class="card">
       <div class="card-title">
         <span>添加考试 / 日程 / 闹钟</span>
-        <button class="btn btn-sm btn-green" id="smartImportExamBtn">📷 Umi-OCR 识日程</button>
+        <div style="display:flex; gap:6px;">
+          <button class="btn btn-sm btn-green" id="smartImportExamBtn">📷 识图导入</button>
+          <button class="btn btn-sm btn-outline" id="openBatchExamBtn">📋 批量导入</button>
+        </div>
       </div>
       <div class="form-grid">
         <select id="eType">
@@ -478,11 +512,11 @@
     </div>
   </section>
 
-  <!-- 3. 图文资料库 (Umi-OCR 同源离线 / 远程双模驱动) -->
+  <!-- 3. 图文资料库 -->
   <section id="page-files" class="page">
     <div class="card">
       <div class="card-title">
-        <span>导入图片 / 文档 / 文字（Umi-OCR 双模引擎）</span>
+        <span>导入图片 / 文档 / 文字（免费网页 OCR）</span>
         <button class="btn btn-sm btn-outline" id="quickConfigUmiBtn">⚙️ OCR设置</button>
       </div>
       <div class="form-grid">
@@ -504,7 +538,7 @@
     </div>
   </section>
 
-  <!-- 4. MusicFree 插件化音乐引擎 + 零占用播放器 + 硬件EQ + 白噪音 -->
+  <!-- 4. MusicFree 插件化音乐引擎 -->
   <section id="page-music" class="page">
     <div class="card">
       <div class="card-title">
@@ -645,10 +679,10 @@
   <section id="page-translate" class="page">
     <div class="card">
       <div class="card-title">
-        <span>🌐 词典级翻译 & Umi-OCR 识图翻译</span>
+        <span>🌐 词典级翻译 & 识图翻译</span>
         <div style="display:flex; gap:4px;">
           <button class="btn btn-sm btn-outline" id="refreshTransBtn">🔄 刷新</button>
-          <button class="btn btn-sm btn-green" id="ocrTranslateBtn">📷 Umi-OCR 识图</button>
+          <button class="btn btn-sm btn-green" id="ocrTranslateBtn">📷 识图翻译</button>
         </div>
       </div>
       <div style="display:grid; grid-template-columns: 1fr auto 1fr; gap:6px; align-items:center; margin-bottom:10px;">
@@ -705,11 +739,11 @@
     </div>
   </section>
 
-  <!-- 个性化外观、触控毛玻璃与 Umi-OCR 双模引擎设置弹窗 -->
+  <!-- 个性化外观、小熊猫桌宠与 OCR 设置弹窗 -->
   <div id="settingsModal" class="modal">
     <div class="modal-body">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-        <strong>🎨 外观、交互与 Umi-OCR 双模引擎设置</strong>
+        <strong>🎨 外观、小熊猫与 OCR 引擎设置</strong>
         <button class="btn btn-sm btn-danger" id="closeSettingsBtn">完成</button>
       </div>
 
@@ -743,7 +777,7 @@
         <input type="checkbox" id="glassModeToggle" style="width:22px; height:22px;" />
       </div>
 
-      <div style="margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; padding:10px; background:var(--card-sub); border-radius:10px; border:1px solid var(--border);">
+      <div style="margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; padding:10px; background:var(--card-sub); border-radius:10px; border:1px solid var(--border);">
         <div>
           <div style="font-size:13px; font-weight:600;">4. 按钮触控透明毛玻璃反馈</div>
           <div class="sub-text">点击或滑动到任意按钮时该按钮直接变透明（无光球、100%跟手）</div>
@@ -751,9 +785,20 @@
         <input type="checkbox" id="slideDwellToggle" style="width:22px; height:22px;" checked />
       </div>
 
+      <div style="margin-bottom:12px; padding:10px; background:var(--card-sub); border-radius:10px; border:1px solid var(--border);">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+          <div>
+            <div style="font-size:13px; font-weight:600;">5. 🐼 显示可对话 AI 小熊猫桌宠</div>
+            <div class="sub-text">拖到手机左右边缘自动吸附隐藏，轻点唤出对话</div>
+          </div>
+          <input type="checkbox" id="pandaVisibleToggle" style="width:22px; height:22px;" checked />
+        </div>
+        <button class="btn btn-sm btn-outline" id="openPandaCfgFromSettingsBtn" style="width:100%; margin-top:8px;">🔑 配置小熊猫 API Key 与模型</button>
+      </div>
+
       <div class="form-grid" style="margin-bottom:14px;">
         <div>
-          <div style="font-size:13px; font-weight:600; margin-bottom:6px;">5. 字体风格</div>
+          <div style="font-size:13px; font-weight:600; margin-bottom:6px;">6. 字体风格</div>
           <select id="fontFamilySelect">
             <option value="system">系统默认</option>
             <option value="serif">典雅宋体/衬线</option>
@@ -762,7 +807,7 @@
           </select>
         </div>
         <div>
-          <div style="font-size:13px; font-weight:600; margin-bottom:6px;">6. 字体大小</div>
+          <div style="font-size:13px; font-weight:600; margin-bottom:6px;">7. 字体大小</div>
           <select id="fontSizeSelect">
             <option value="13px">紧凑 (小)</option>
             <option value="14px" selected>标准 (中)</option>
@@ -774,16 +819,29 @@
 
       <div style="padding:10px; background:var(--card-sub); border-radius:10px; border:1px solid var(--border);">
         <div style="font-size:13px; font-weight:600; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
-          <span>7. 🧠 Umi-OCR 双模引擎设置</span>
-          <a href="https://github.com/hiroi-sora/Umi-OCR" target="_blank" rel="noopener" style="font-size:11px; color:var(--primary);">项目主页 ↗</a>
+          <span>8. 🧠 OCR 文字识别引擎设置</span>
+          <a href="https://ocr.space/ocrapi/freekey" target="_blank" rel="noopener" style="font-size:11px; color:var(--primary);">领免费 Key ↗</a>
         </div>
         <select id="umiEngineModeSelect" style="margin-bottom:8px;">
-          <option value="local" selected>⚡ 本机内置离线引擎（Umi-OCR 同源 RapidOCR，免电脑）</option>
-          <option value="remote">🌐 远程 Umi-OCR HTTP 服务（填电脑局域网 IP）</option>
+          <option value="web" selected>🌐 免费网页版 OCR（OCR.space，中英/表格高精准）</option>
+          <option value="local">⚡ 本机离线 OCR（断网兜底）</option>
+          <option value="remote">🖥️ 远程 Umi-OCR 服务（电脑局域网 IP）</option>
         </select>
+
+        <div id="webOcrFields" style="margin-bottom:8px;">
+          <div class="sub-text" style="margin-bottom:6px;">
+            已内置免费公共 Key（直接可用）；若触发限流，点右上角免费领个人 Key（2.5万次/月）填入即可：
+          </div>
+          <input id="webOcrKeyInput" placeholder="留空即用内置免费 Key (helloworld)" style="margin-bottom:8px;" />
+          <select id="webOcrEngineSelect">
+            <option value="2" selected>Engine 2（推荐：中英混排/课表表格/自动语种）</option>
+            <option value="3">Engine 3（手写体/复杂字体增强）</option>
+          </select>
+        </div>
+
         <div id="umiRemoteFields" style="display:none; margin-bottom:8px;">
           <div class="sub-text" style="margin-bottom:6px;">
-            请填写电脑的局域网 IP（不要填 127.0.0.1），并在电脑 Umi-OCR「高级 → HTTP 服务」选择“任何可用地址”。
+            填写电脑局域网 IP（不要填 127.0.0.1），电脑 Umi-OCR 需开启“任何可用地址”。
           </div>
           <input id="umiServerUrlInput" placeholder="例如 http://192.168.1.100:1224" style="margin-bottom:8px;" />
           <select id="umiParserSelect">
@@ -794,15 +852,15 @@
             <option value="none">远程排版：不进行合并</option>
           </select>
         </div>
+
         <select id="umiMaxPagesSelect" style="margin-bottom:8px;">
           <option value="1">PDF 识别前 1 页</option>
           <option value="3" selected>PDF 识别前 3 页</option>
           <option value="5">PDF 识别前 5 页</option>
-          <option value="10">PDF 识别前 10 页</option>
         </select>
         <div style="display:flex; gap:6px;">
           <button class="btn btn-sm" id="saveUmiConfigBtn" style="flex:1;">💾 保存配置</button>
-          <button class="btn btn-sm btn-green" id="testUmiConfigBtn">🔌 检测引擎</button>
+          <button class="btn btn-sm btn-green" id="testUmiConfigBtn">🔌 测试识别</button>
         </div>
         <div id="umiStatusHint" class="sub-text" style="margin-top:6px;"></div>
       </div>
@@ -826,6 +884,23 @@
     <h2 id="ringTitle" style="margin:16px 0 8px;">闹钟响铃中</h2>
     <p id="ringBody" style="opacity:0.9; margin-bottom:28px;">时间到了！</p>
     <button class="btn" id="stopRingBtn" style="background:#fff; color:#dc2626; font-size:18px; padding:14px 36px; border-radius:30px;">🔕 关闭闹钟</button>
+  </div>
+
+  <!-- 可爱悬浮 AI 小熊猫桌宠 -->
+  <div id="pandaPet" title="点击与小熊猫对话，拖到边缘吸附隐藏">
+    <svg viewBox="0 0 64 64" aria-hidden="true">
+      <circle cx="16" cy="18" r="9" fill="#1f2937" />
+      <circle cx="48" cy="18" r="9" fill="#1f2937" />
+      <circle cx="32" cy="35" r="22" fill="#ffffff" stroke="#1f2937" stroke-width="2.5" />
+      <ellipse cx="23" cy="33" rx="6.5" ry="7.8" transform="rotate(-14 23 33)" fill="#1f2937" />
+      <ellipse cx="41" cy="33" rx="6.5" ry="7.8" transform="rotate(14 41 33)" fill="#1f2937" />
+      <circle cx="24" cy="32" r="2.2" fill="#ffffff" />
+      <circle cx="40" cy="32" r="2.2" fill="#ffffff" />
+      <ellipse cx="16.5" cy="41" rx="3.4" ry="2" fill="#fda4af" opacity="0.85" />
+      <ellipse cx="47.5" cy="41" rx="3.4" ry="2" fill="#fda4af" opacity="0.85" />
+      <ellipse cx="32" cy="40" rx="3.4" ry="2.2" fill="#1f2937" />
+      <path d="M27.5 44.5 Q32 48.5 36.5 44.5" fill="none" stroke="#1f2937" stroke-width="2.2" stroke-linecap="round" />
+    </svg>
   </div>
 
   <div id="toastTip"></div>
