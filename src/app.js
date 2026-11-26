@@ -51,7 +51,7 @@ async function httpPostJson(url, payload, extraHeaders = {}) {
   return await resp.json();
 }
 
-// ==================== 0. 个性化外观与 Umi-OCR 设置 ====================
+// ==================== 0. 个性化外观与 Umi-OCR 双模引擎设置 ====================
 const FONT_MAP = {
   system: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   serif: '"Noto Serif SC", "Songti SC", Georgia, serif',
@@ -62,8 +62,9 @@ const FONT_MAP = {
 let appPrefs = JSON.parse(localStorage.getItem('app_prefs_v2') || 'null') || {
   color: '#4f46e5', darkMode: 'system', glass: true, slideDwell: true, fontFamily: 'system', fontSize: '14px'
 };
-let umiOcrConfig = JSON.parse(localStorage.getItem('umi_ocr_cfg_v1') || 'null') || {
-  serverUrl: 'http://127.0.0.1:1224',
+let umiOcrConfig = JSON.parse(localStorage.getItem('umi_ocr_cfg_v2') || 'null') || {
+  mode: 'local',
+  serverUrl: 'http://192.168.1.100:1224',
   parser: 'multi_para',
   maxPages: 3
 };
@@ -74,23 +75,33 @@ function hexToSoftBg(hex) {
   return `rgba(${parseInt(c.slice(0, 2), 16) || 79}, ${parseInt(c.slice(2, 4), 16) || 70}, ${parseInt(c.slice(4, 6), 16) || 229}, 0.14)`;
 }
 
+function toggleUmiRemoteVisibility() {
+  const mode = document.getElementById('umiEngineModeSelect')?.value || 'local';
+  const box = document.getElementById('umiRemoteFields');
+  if (box) box.style.display = mode === 'remote' ? 'block' : 'none';
+}
+
 function syncUmiConfigToSettingsUI() {
+  const modeEl = document.getElementById('umiEngineModeSelect');
   const u = document.getElementById('umiServerUrlInput');
   const p = document.getElementById('umiParserSelect');
   const m = document.getElementById('umiMaxPagesSelect');
-  if (u) u.value = umiOcrConfig.serverUrl || 'http://127.0.0.1:1224';
+  if (modeEl) modeEl.value = umiOcrConfig.mode || 'local';
+  if (u) u.value = umiOcrConfig.serverUrl || 'http://192.168.1.100:1224';
   if (p) p.value = umiOcrConfig.parser || 'multi_para';
   if (m) m.value = String(umiOcrConfig.maxPages || 3);
+  toggleUmiRemoteVisibility();
 }
 
 function saveUmiConfigFromUI() {
   const rawUrl = (document.getElementById('umiServerUrlInput')?.value || '').trim().replace(/\/+$/, '');
   umiOcrConfig = {
-    serverUrl: rawUrl || 'http://127.0.0.1:1224',
+    mode: document.getElementById('umiEngineModeSelect')?.value || 'local',
+    serverUrl: rawUrl || 'http://192.168.1.100:1224',
     parser: document.getElementById('umiParserSelect')?.value || 'multi_para',
     maxPages: Number(document.getElementById('umiMaxPagesSelect')?.value || 3)
   };
-  localStorage.setItem('umi_ocr_cfg_v1', JSON.stringify(umiOcrConfig));
+  localStorage.setItem('umi_ocr_cfg_v2', JSON.stringify(umiOcrConfig));
 }
 
 function applyAppearance() {
@@ -133,24 +144,50 @@ document.getElementById('glassModeToggle').addEventListener('change', (e) => { a
 document.getElementById('slideDwellToggle').addEventListener('change', (e) => { appPrefs.slideDwell = e.target.checked; savePrefs(); });
 document.getElementById('fontFamilySelect').addEventListener('change', (e) => { appPrefs.fontFamily = e.target.value; savePrefs(); });
 document.getElementById('fontSizeSelect').addEventListener('change', (e) => { appPrefs.fontSize = e.target.value; savePrefs(); });
+document.getElementById('umiEngineModeSelect').addEventListener('change', toggleUmiRemoteVisibility);
 
 document.getElementById('saveUmiConfigBtn').addEventListener('click', () => {
   saveUmiConfigFromUI();
-  document.getElementById('umiStatusHint').textContent = `✅ 已保存：${umiOcrConfig.serverUrl}`;
-  showToast('✅ Umi-OCR 配置已保存');
+  const label = umiOcrConfig.mode === 'local' ? '本机内置离线引擎 (RapidOCR)' : `远程服务 (${umiOcrConfig.serverUrl})`;
+  document.getElementById('umiStatusHint').textContent = `✅ 已保存：${label}`;
+  showToast('✅ OCR 配置已保存');
 });
+
 document.getElementById('testUmiConfigBtn').addEventListener('click', async () => {
   saveUmiConfigFromUI();
   const hint = document.getElementById('umiStatusHint');
+  if (umiOcrConfig.mode === 'local') {
+    if (!Capacitor.isNativePlatform()) {
+      hint.textContent = 'ℹ️ 本机内置 RapidOCR 需在安卓 APK 中运行；浏览器预览可切换为远程 Umi-OCR 模式。';
+      return;
+    }
+    hint.textContent = '⚡ 正在初始化并检测本机内置 RapidOCR 离线引擎...';
+    try {
+      const res = await NativeTools.testLocalOcr();
+      hint.textContent = `✅ ${res?.engine || '本机离线 OCR'} 已就绪！免电脑、断网可用。`;
+      showToast('✅ 本机离线 OCR 引擎就绪');
+    } catch (e) {
+      hint.textContent = `❌ 本机引擎初始化失败：${e.message}`;
+      showToast('❌ 本机 OCR 初始化失败');
+    }
+    return;
+  }
+
+  if (Capacitor.isNativePlatform() && /^https?:\/\/(127\.0\.0\.1|localhost)/i.test(umiOcrConfig.serverUrl)) {
+    hint.textContent = '⚠️ 手机上填 127.0.0.1 会连向手机自己！请改为电脑局域网 IP（如 http://192.168.1.100:1224），或切回「本机内置离线引擎」。';
+    showToast('⚠️ 手机端不能填 127.0.0.1');
+    return;
+  }
+
   hint.textContent = `🔌 正在连接 ${umiOcrConfig.serverUrl}/api/ocr/get_options ...`;
   try {
     const res = await httpGetJson(`${umiOcrConfig.serverUrl}/api/ocr/get_options`);
     const keys = res && typeof res === 'object' ? Object.keys(res).length : 0;
-    hint.textContent = `✅ Umi-OCR 连接成功！检测到 ${keys} 项引擎参数。`;
-    showToast('✅ Umi-OCR 服务连接成功');
+    hint.textContent = `✅ 远程 Umi-OCR 连接成功！检测到 ${keys} 项参数。`;
+    showToast('✅ 远程 Umi-OCR 连接成功');
   } catch (e) {
-    hint.textContent = `❌ 连接失败：${e.message}（请确认 Umi-OCR 已开启 HTTP 服务）`;
-    showToast('❌ Umi-OCR 无法连接');
+    hint.textContent = `❌ 连接失败：${e.message}（若无电脑服务，建议上方切回“本机内置离线引擎”）`;
+    showToast('❌ 远程 Umi-OCR 无法连接');
   }
 });
 
@@ -211,7 +248,6 @@ function finishNavDrag() {
 bottomNav.addEventListener('touchend', finishNavDrag, { passive: true });
 bottomNav.addEventListener('touchcancel', finishNavDrag, { passive: true });
 
-// 顶栏及页面交互按钮：点击即变透明毛玻璃，滑动到哪个按钮哪个按钮立刻变透明，无悬浮光球
 const INTERACTIVE_SEL = [
   'button:not(#bottomNav button)', '.day-pill', '.city-pill', '.eq-pill',
   '.ambient-btn', '.idx-box', '.hour-chip', '.day-chip', '.phrase-chip',
@@ -332,7 +368,6 @@ function getCityLocalHour(tz) {
   try { return Number(new Intl.DateTimeFormat('en-GB', { timeZone: tz || DEVICE_TZ, hour12: false, hour: '2-digit' }).format(new Date())) % 24; }
   catch { return new Date().getHours(); }
 }
-
 function updateLiveClock() {
   const now = new Date(), city = getActiveCity(), tz = city?.timezone || DEVICE_TZ;
   try {
@@ -341,29 +376,19 @@ function updateLiveClock() {
     const tag = city?.kind === 'device' ? '📱 设备时区' : (city?.kind === 'network' ? '🌐 网络时区' : (city?.kind === 'synced' ? '📍 设备与网络同区' : '🌍 自选地区'));
     document.getElementById('liveTzLabel').textContent = `${tag} · ${tz}`;
   } catch { document.getElementById('liveClock').textContent = now.toTimeString().slice(0, 8); }
-
   const dualBar = document.getElementById('dualTzBar');
   if (deviceRefInfo && networkRefInfo && deviceRefInfo.timezone !== networkRefInfo.timezone) {
     dualBar.classList.add('show');
     dualBar.innerHTML = `<span>📱 设备(${deviceRefInfo.name}): <strong>${formatClockInTz(now, deviceRefInfo.timezone)}</strong></span><span>🌐 网络(${networkRefInfo.name}): <strong>${formatClockInTz(now, networkRefInfo.timezone)}</strong></span>`;
   } else dualBar.classList.remove('show');
 }
-
 async function geocodeCitySmart(rawName) {
   const trimmed = (rawName || '').trim(), clean = trimmed.replace(/(省|市|特别行政区|自治区)$/, '');
   if (BUILTIN_CITIES[clean]) { const [lat, lon, timezone] = BUILTIN_CITIES[clean]; return { name: clean, lat, lon, timezone }; }
-  try {
-    const geo = await httpGetJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(clean)}&count=1&language=zh&format=json`);
-    const loc = geo?.results?.[0];
-    if (loc) return { name: loc.name || clean, lat: loc.latitude, lon: loc.longitude, timezone: loc.timezone || DEVICE_TZ };
-  } catch {}
-  try {
-    const nom = await httpGetJson(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(trimmed)}&format=json&limit=1&accept-language=zh`);
-    if (nom?.[0]?.lat) return { name: clean || trimmed, lat: Number(nom[0].lat), lon: Number(nom[0].lon), timezone: DEVICE_TZ };
-  } catch {}
+  try { const geo = await httpGetJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(clean)}&count=1&language=zh&format=json`); const loc = geo?.results?.[0]; if (loc) return { name: loc.name || clean, lat: loc.latitude, lon: loc.longitude, timezone: loc.timezone || DEVICE_TZ }; } catch {}
+  try { const nom = await httpGetJson(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(trimmed)}&format=json&limit=1&accept-language=zh`); if (nom?.[0]?.lat) return { name: clean || trimmed, lat: Number(nom[0].lat), lon: Number(nom[0].lon), timezone: DEVICE_TZ }; } catch {}
   return null;
 }
-
 function renderCityTabs() {
   const bar = document.getElementById('cityTabs'); bar.innerHTML = '';
   savedCities.forEach(c => {
@@ -387,7 +412,6 @@ function renderCityTabs() {
   });
   const addBtn = document.createElement('button'); addBtn.className = 'city-pill'; addBtn.textContent = '+ 添加地区'; addBtn.onclick = addNewCityDialog; bar.appendChild(addBtn);
 }
-
 async function addNewCityDialog() {
   const val = prompt('输入城市或地区名（如 成都、杭州、上海、东京、纽约）：');
   if (!val || !val.trim()) return;
@@ -398,7 +422,6 @@ async function addNewCityDialog() {
   savedCities.push(newCity); activeCityId = newCity.id;
   saveCitiesState(); renderCityTabs(); updateLiveClock(); loadActiveCityWeather();
 }
-
 function buildSmartAdvice(cityObj, overrideLabel, temp, precip, code) {
   const city = cityObj || getActiveCity(); if (!city) return;
   const tips = [], label = overrideLabel || `${city.name}当前`, localHr = getCityLocalHour(city.timezone);
@@ -428,20 +451,14 @@ function buildSmartAdvice(cityObj, overrideLabel, temp, precip, code) {
   }
   document.getElementById('smartAdviceBox').innerHTML = `<strong>💡 ${city.name} · 智能建议</strong><br/>${tips.slice(0, 3).join('<br/>')}`;
 }
-
 async function fetchWeatherFromOpenMeteo(city) {
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${city.lat}&longitude=${city.lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&hourly=temperature_2m,weather_code,precipitation_probability&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=8`;
   const w = await httpGetJson(url); if (!w?.current) throw new Error('Open-Meteo 无数据');
   const cur = w.current, hourly = w.hourly || {}, daily = w.daily || {};
   let startIdx = (hourly.time || []).findIndex(t => t.startsWith((cur.time || '').slice(0, 13))); if (startIdx < 0) startIdx = 0;
   const hours = [], days = [];
-  for (let i = startIdx; i < Math.min(startIdx + 24, (hourly.time || []).length); i++) {
-    hours.push({ label: i === startIdx ? '现在' : hourly.time[i].slice(11, 16), temp: Math.round(hourly.temperature_2m[i]), code: hourly.weather_code[i], precip: hourly.precipitation_probability?.[i] ?? 0 });
-  }
-  for (let i = 0; i < Math.min(8, (daily.time || []).length); i++) {
-    const df = daily.time[i], dObj = new Date(df + 'T12:00:00');
-    days.push({ dateShort: df.slice(5), wk: i === 0 ? '今天' : (i === 1 ? '明天' : DAYS_LABEL[dObj.getDay()]), code: daily.weather_code[i], min: Math.round(daily.temperature_2m_min[i]), max: Math.round(daily.temperature_2m_max[i]), precip: daily.precipitation_probability_max?.[i] ?? 0 });
-  }
+  for (let i = startIdx; i < Math.min(startIdx + 24, (hourly.time || []).length); i++) hours.push({ label: i === startIdx ? '现在' : hourly.time[i].slice(11, 16), temp: Math.round(hourly.temperature_2m[i]), code: hourly.weather_code[i], precip: hourly.precipitation_probability?.[i] ?? 0 });
+  for (let i = 0; i < Math.min(8, (daily.time || []).length); i++) { const df = daily.time[i], dObj = new Date(df + 'T12:00:00'); days.push({ dateShort: df.slice(5), wk: i === 0 ? '今天' : (i === 1 ? '明天' : DAYS_LABEL[dObj.getDay()]), code: daily.weather_code[i], min: Math.round(daily.temperature_2m_min[i]), max: Math.round(daily.temperature_2m_max[i]), precip: daily.precipitation_probability_max?.[i] ?? 0 }); }
   return { timezone: w.timezone || city.timezone, temp: Math.round(cur.temperature_2m), feels: Math.round(cur.apparent_temperature), humidity: cur.relative_humidity_2m, code: cur.weather_code, precip: days[0]?.precip ?? 0, hours, days };
 }
 async function fetchWeatherFromWttr(city) {
@@ -455,13 +472,11 @@ async function fetchWeatherFromWttr(city) {
   });
   return { timezone: city.timezone, temp: Number(cc.temp_C), feels: Number(cc.FeelsLikeC || cc.temp_C), humidity: Number(cc.humidity || 50), code: wttrCodeToWmo(cc.weatherCode), precip: days[0]?.precip ?? 0, hours: hours.slice(0, 16), days };
 }
-
 function renderWeatherDataToUI(city, data) {
   const [ico, txt] = wmoDesc(data.code);
   document.getElementById('weatherTemp').textContent = `${ico} ${data.temp}°C`;
   document.getElementById('weatherDesc').textContent = `${city.name} · ${txt}`;
   document.getElementById('weatherDetail').textContent = `体感 ${data.feels}°C · 湿度 ${data.humidity}% · 降水 ${data.precip}%`;
-
   const hStrip = document.getElementById('hourlyStrip'); hStrip.innerHTML = '';
   (data.hours || []).forEach((h, i) => {
     const [hIco, hTxt] = wmoDesc(h.code), chip = document.createElement('div');
@@ -470,7 +485,6 @@ function renderWeatherDataToUI(city, data) {
     chip.onclick = () => { hStrip.querySelectorAll('.hour-chip').forEach(x => x.classList.remove('selected')); chip.classList.add('selected'); buildSmartAdvice(city, `${city.name} ${h.label} (${hTxt})`, h.temp, h.precip, h.code); };
     hStrip.appendChild(chip);
   });
-
   const dStrip = document.getElementById('dailyStrip'); dStrip.innerHTML = '';
   (data.days || []).forEach((d, i) => {
     const [dIco, dTxt] = wmoDesc(d.code), chip = document.createElement('div');
@@ -481,7 +495,6 @@ function renderWeatherDataToUI(city, data) {
   });
   buildSmartAdvice(city, null, data.temp, data.precip, data.code);
 }
-
 async function loadActiveCityWeather() {
   const city = getActiveCity(); if (!city) return;
   const reqId = city.id;
@@ -495,14 +508,12 @@ async function loadActiveCityWeather() {
     weatherCache[city.id] = data; localStorage.setItem('weather_cache_v1', JSON.stringify(weatherCache)); renderWeatherDataToUI(city, data);
   } else if (!weatherCache[city.id]) { document.getElementById('weatherDesc').textContent = `${city.name} · 暂未联网`; buildSmartAdvice(city, null, null, 0, 0); }
 }
-
 async function detectDeviceAndNetworkZones(resetDismissed = false) {
   if (resetDismissed) dismissedAutoIds = [];
   let netLoc = null;
   try { const ip = await httpGetJson('https://get.geojs.io/v1/ip/geo.json'); if (ip?.latitude && ip?.longitude) netLoc = { name: ip.city || ip.region || '网络地区', lat: Number(ip.latitude), lon: Number(ip.longitude), timezone: ip.timezone || DEVICE_TZ }; } catch {}
   if (!netLoc) { try { const ip2 = await httpGetJson('https://ipwho.is/'); if (ip2?.success) netLoc = { name: ip2.city || ip2.region || '网络地区', lat: Number(ip2.latitude), lon: Number(ip2.longitude), timezone: ip2.timezone?.id || DEVICE_TZ }; } catch {} }
   networkRefInfo = netLoc;
-
   let devLoc = null;
   if (Capacitor.isNativePlatform()) {
     try {
@@ -523,12 +534,7 @@ async function detectDeviceAndNetworkZones(resetDismissed = false) {
   deviceRefInfo = devLoc;
 
   const isMismatch = !!(networkRefInfo && networkRefInfo.timezone !== deviceRefInfo.timezone);
-  const upsert = (id, data) => {
-    if (dismissedAutoIds.includes(id)) return;
-    const idx = savedCities.findIndex(c => c.id === id);
-    if (idx >= 0) savedCities[idx] = { ...savedCities[idx], ...data, id };
-    else savedCities.unshift({ id, ...data });
-  };
+  const upsert = (id, data) => { if (dismissedAutoIds.includes(id)) return; const idx = savedCities.findIndex(c => c.id === id); if (idx >= 0) savedCities[idx] = { ...savedCities[idx], ...data, id }; else savedCities.unshift({ id, ...data }); };
   if (isMismatch) { upsert('auto_network', { kind: 'network', ...networkRefInfo }); upsert('auto_device', { kind: 'device', ...deviceRefInfo }); }
   else { savedCities = savedCities.filter(c => c.id !== 'auto_network'); upsert('auto_device', { kind: 'synced', ...deviceRefInfo }); }
   if (!savedCities.length) savedCities.push({ id: 'auto_device', kind: 'device', ...deviceRefInfo });
@@ -607,7 +613,6 @@ async function scheduleAppReminder({ id, title, body, atDate, weeklyWeekday, hou
   }
 }
 async function cancelReminder(id) { if (id && Capacitor.isNativePlatform()) { try { await LocalNotifications.cancel({ notifications: [{ id }] }); } catch {} } }
-
 document.getElementById('testAlarmBtn').addEventListener('click', () => {
   const box = document.createElement('div');
   box.innerHTML = `<p class="sub-text" style="margin-bottom:10px;">【系统闹钟】和【系统日历】写入手机底层，关掉 App 依然准时响！</p><button class="btn" id="t5s" style="width:100%; margin-bottom:8px;">🔔 App 5秒后连续响铃</button><button class="btn btn-warn" id="tSys" style="width:100%; margin-bottom:8px;">📱 写入【系统时钟闹钟】(1分钟后)</button><button class="btn btn-green" id="tCal" style="width:100%;">📅 写入【系统日历日程】(10分钟后)</button>`;
@@ -617,7 +622,7 @@ document.getElementById('testAlarmBtn').addEventListener('click', () => {
   openModal('⏰ 多样提醒与设备同步测试', box);
 });
 
-// ==================== 4. 通用弹窗 & Umi-OCR 统一引擎 ====================
+// ==================== 4. 通用弹窗 & Umi-OCR 双模统一引擎（本机 RapidOCR 离线 + 远程 HTTP） ====================
 const modal = document.getElementById('modal');
 const modalTitle = document.getElementById('modalTitle');
 const modalContent = document.getElementById('modalContent');
@@ -632,7 +637,7 @@ document.getElementById('closeModalBtn').addEventListener('click', () => modal.c
 modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
 
 async function callUmiOcrOnBase64(base64Str) {
-  const baseUrl = (umiOcrConfig.serverUrl || 'http://127.0.0.1:1224').replace(/\/+$/, '');
+  const baseUrl = (umiOcrConfig.serverUrl || 'http://192.168.1.100:1224').replace(/\/+$/, '');
   const cleanB64 = String(base64Str || '').replace(/^data:[^;]+;base64,/, '');
   if (!cleanB64) throw new Error('图像 Base64 为空');
   const res = await httpPostJson(`${baseUrl}/api/ocr`, {
@@ -643,6 +648,7 @@ async function callUmiOcrOnBase64(base64Str) {
   if (res?.code === 101) return '';
   throw new Error(res?.data || `Umi-OCR 错误码 ${res?.code ?? '未知'}`);
 }
+
 function fileBlobToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -651,29 +657,53 @@ function fileBlobToBase64(file) {
     reader.readAsDataURL(file);
   });
 }
+
 async function extractTextViaUmiOcr(fileRecord, onProgress) {
   if (fileRecord.textContent !== undefined && fileRecord.textContent !== '') return fileRecord.textContent;
+  const mode = umiOcrConfig.mode || 'local';
+
   if (Capacitor.isNativePlatform() && fileRecord.localPath) {
-    onProgress?.('📦 正在编码文件并提交给 Umi-OCR...');
-    const prep = await NativeTools.extractText({ localPath: fileRecord.localPath, maxPages: umiOcrConfig.maxPages || 3 });
+    onProgress?.(mode === 'local' ? '⚡ 本机内置 RapidOCR（Umi-OCR 同源引擎）离线识别中...' : `🌐 正在编码并提交至远程 Umi-OCR (${umiOcrConfig.serverUrl})...`);
+    const prep = await NativeTools.extractText({
+      localPath: fileRecord.localPath,
+      mode,
+      maxPages: umiOcrConfig.maxPages || 3
+    });
     if (!prep?.needsOcr) return prep?.text || '';
     const imgs = prep.images || [], chunks = [];
     for (let i = 0; i < imgs.length; i++) {
-      onProgress?.(`🧠 Umi-OCR 正在识别第 ${i + 1}/${imgs.length} 页...`);
+      onProgress?.(`🌐 远程 Umi-OCR 正在识别第 ${i + 1}/${imgs.length} 页...`);
       const part = await callUmiOcrOnBase64(imgs[i]);
       if (part && part.trim()) chunks.push(part.trim());
     }
     return chunks.join('\n\n');
   }
-  if (fileRecord.rawBase64) { onProgress?.('🧠 正在调用 Umi-OCR...'); return await callUmiOcrOnBase64(fileRecord.rawBase64); }
-  if (fileRecord.dataUrl && fileRecord.dataUrl.startsWith('data:image')) { onProgress?.('🧠 正在调用 Umi-OCR...'); return await callUmiOcrOnBase64(fileRecord.dataUrl); }
+
+  if (fileRecord.rawBase64) { onProgress?.('🌐 正在调用远程 Umi-OCR...'); return await callUmiOcrOnBase64(fileRecord.rawBase64); }
+  if (fileRecord.dataUrl && fileRecord.dataUrl.startsWith('data:image')) { onProgress?.('🌐 正在调用远程 Umi-OCR...'); return await callUmiOcrOnBase64(fileRecord.dataUrl); }
   throw new Error('该文件请在安卓端使用，或在浏览器直接选择图片');
 }
+
 function showUmiOcrErrorModal(errMsg) {
+  const isRemote = umiOcrConfig.mode === 'remote';
   const box = document.createElement('div');
-  box.innerHTML = `<p class="sub-text" style="color:#dc2626; font-size:13px; margin-bottom:10px;">Umi-OCR 识别失败：${errMsg}</p><div class="sub-text" style="padding:10px; background:var(--card-sub); border-radius:8px; border:1px solid var(--border); margin-bottom:10px;">当前服务地址：<strong>${umiOcrConfig.serverUrl}</strong><br/>请启动 <a href="https://github.com/hiroi-sora/Umi-OCR" target="_blank" rel="noopener" style="color:var(--primary);">Umi-OCR</a> 并在「全局设置 → 高级 → HTTP 服务」选择“任何可用地址”。</div><button class="btn" id="openUmiCfgFromErr" style="width:100%;">⚙️ 立即配置 Umi-OCR 服务地址</button>`;
+  box.innerHTML = `
+    <p class="sub-text" style="color:#dc2626; font-size:13px; margin-bottom:10px;">OCR 识别失败：${errMsg}</p>
+    <div class="sub-text" style="padding:10px; background:var(--card-sub); border-radius:8px; border:1px solid var(--border); margin-bottom:10px;">
+      当前模式：<strong>${isRemote ? `远程 Umi-OCR (${umiOcrConfig.serverUrl})` : '本机内置 RapidOCR 离线引擎'}</strong><br/>
+      ${isRemote ? '手机端不可填 127.0.0.1，请填写电脑局域网 IP，或直接一键切换为本机离线引擎！' : '请检查图片是否清晰，或前往设置尝试远程 Umi-OCR 服务。'}
+    </div>
+    ${isRemote ? '<button class="btn btn-green" id="switchLocalOcrBtn" style="width:100%; margin-bottom:8px;">⚡ 一键切回本机内置离线引擎（免电脑）</button>' : ''}
+    <button class="btn btn-outline" id="openUmiCfgFromErr" style="width:100%;">⚙️ 打开 OCR 引擎设置</button>
+  `;
+  box.querySelector('#switchLocalOcrBtn')?.addEventListener('click', () => {
+    umiOcrConfig.mode = 'local';
+    localStorage.setItem('umi_ocr_cfg_v2', JSON.stringify(umiOcrConfig));
+    modal.classList.remove('open');
+    showToast('✅ 已切换为本机内置离线引擎，请重新点击识别！', 2600);
+  });
   box.querySelector('#openUmiCfgFromErr').onclick = () => { modal.classList.remove('open'); applyAppearance(); settingsModal.classList.add('open'); };
-  openModal('🧠 Umi-OCR 服务未就绪', box);
+  openModal('🧠 OCR 识别提示', box);
 }
 
 const PERIOD_MAP = { 1:['08:00','08:45'], 2:['08:55','09:40'], 3:['10:00','10:45'], 4:['10:55','11:40'], 5:['14:00','14:45'], 6:['14:55','15:40'], 7:['16:00','16:45'], 8:['16:55','17:40'], 9:['19:00','19:45'], 10:['19:55','20:40'] };
@@ -707,7 +737,8 @@ function parseSmartText(rawText) {
 }
 
 async function runSmartRecognizeFromLocalFile(fileRecord) {
-  openModal('🧠 Umi-OCR 识别中...', `<div id="umiProgressTip" style="text-align:center; padding:24px;">正在请求 Umi-OCR (${umiOcrConfig.serverUrl})...</div>`);
+  const tip = umiOcrConfig.mode === 'local' ? '⚡ 本机内置 RapidOCR 离线识别中（首次加载约 1~2 秒）...' : `🌐 正在请求远程 Umi-OCR (${umiOcrConfig.serverUrl})...`;
+  openModal('🧠 Umi-OCR 识别中...', `<div id="umiProgressTip" style="text-align:center; padding:24px;">${tip}</div>`);
   try {
     const text = await extractTextViaUmiOcr(fileRecord, (msg) => { const el = document.getElementById('umiProgressTip'); if (el) el.textContent = msg; });
     showSmartImportReviewModal(text);
@@ -716,7 +747,7 @@ async function runSmartRecognizeFromLocalFile(fileRecord) {
 
 function showSmartImportReviewModal(rawText) {
   const { parsedCourses, parsedEvents } = parseSmartText(rawText), box = document.createElement('div');
-  box.innerHTML = `<div style="font-size:12px; font-weight:600; margin-bottom:4px;">📄 Umi-OCR 提取原文（可微调）：</div><textarea id="ocrRawEdit" style="min-height:95px; font-size:12px;">${(rawText || '').replace(/</g, '&lt;')}</textarea><button class="btn btn-sm btn-outline" id="reparseBtn" style="margin:6px 0 10px;">🔄 重新解析</button><div id="parsedPreviewArea"></div>`;
+  box.innerHTML = `<div style="font-size:12px; font-weight:600; margin-bottom:4px;">📄 提取到的原文（可微调）：</div><textarea id="ocrRawEdit" style="min-height:95px; font-size:12px;">${(rawText || '').replace(/</g, '&lt;')}</textarea><button class="btn btn-sm btn-outline" id="reparseBtn" style="margin:6px 0 10px;">🔄 重新解析</button><div id="parsedPreviewArea"></div>`;
   const renderPreview = (cList, eList) => {
     const area = box.querySelector('#parsedPreviewArea');
     if (!cList.length && !eList.length) { area.innerHTML = `<div class="sub-text" style="color:#b45309; padding:8px; background:#fef3c7; border-radius:8px;">示例：<br/><code>高等数学 周一 08:00-09:40 教A201</code><br/><code>英语考试 2026-12-20 09:00 教B305</code></div>`; return; }
@@ -1145,7 +1176,7 @@ function openMfPluginManagerModal() {
     if (Capacitor.isNativePlatform()) {
       try {
         const res = await NativeTools.pickFiles({ accept: '*/*', multiple: true }); let ok = 0;
-        for (const f of (res.files || [])) { const ex = await NativeTools.extractText({ localPath: f.localPath }); if (ex?.text) { await installSingleMfPluginFromCode(ex.text, ''); ok++; } }
+        for (const f of (res.files || [])) { const ex = await NativeTools.extractText({ localPath: f.localPath, mode: 'local' }); if (ex?.text) { await installSingleMfPluginFromCode(ex.text, ''); ok++; } }
         showToast(`✅ 本地导入 ${ok} 个插件`); renderList();
       } catch (e) { if (!String(e.message).includes('取消')) alert('导入失败：' + e.message); }
     } else document.getElementById('fallbackPluginFileInput').click();
@@ -1309,12 +1340,9 @@ function renderOnlineHistoryBox() {
 }
 
 async function playSingleOnlineUrl(url, title, format, headers = {}, rawLrc = '') {
-  isPlayingOnlineStream = true;
-  currentTrackIdx = -1;
-  renderTracks();
+  isPlayingOnlineStream = true; currentTrackIdx = -1; renderTracks();
   updateTrackUiHeader(title, format);
   renderLyricsBox(rawLrc, rawLrc ? '' : '🎵 正在播放（当前曲目暂无同步歌词）');
-
   onlinePlayHist = [{ url, title, format, headers }, ...onlinePlayHist.filter(x => x.url !== url)].slice(0, 12);
   localStorage.setItem('online_play_hist_v1', JSON.stringify(onlinePlayHist));
   renderOnlineHistoryBox();
@@ -1335,11 +1363,8 @@ async function playMusicFreeSong(pluginInst, songItem) {
   const quality = document.getElementById('mfQualitySelect')?.value || 'standard';
   showToast(`🎵 正在通过【${pluginInst.platform}】解析音源...`);
   let mediaRes = null;
-  if (typeof pluginInst.getMediaSource === 'function') {
-    mediaRes = await pluginInst.getMediaSource(songItem, quality);
-  } else if (songItem.url) {
-    mediaRes = { url: songItem.url };
-  }
+  if (typeof pluginInst.getMediaSource === 'function') mediaRes = await pluginInst.getMediaSource(songItem, quality);
+  else if (songItem.url) mediaRes = { url: songItem.url };
   if (!mediaRes?.url) throw new Error('该音源未返回可播放地址（可能需会员或换源）');
   const headers = { ...(mediaRes.headers || {}) };
   if (mediaRes.userAgent && !headers['User-Agent']) headers['User-Agent'] = mediaRes.userAgent;
@@ -1348,19 +1373,14 @@ async function playMusicFreeSong(pluginInst, songItem) {
 
   let rawLrc = '';
   if (typeof pluginInst.getLyric === 'function') {
-    try {
-      const lrcRes = await pluginInst.getLyric(songItem);
-      rawLrc = lrcRes?.rawLrc || (lrcRes?.lrc ? await httpGetText(lrcRes.lrc) : '');
-    } catch {}
+    try { const lrcRes = await pluginInst.getLyric(songItem); rawLrc = lrcRes?.rawLrc || (lrcRes?.lrc ? await httpGetText(lrcRes.lrc) : ''); } catch {}
   }
   await playSingleOnlineUrl(mediaRes.url, fullTitle, fmt, headers, rawLrc);
-  return { url: mediaRes.url, headers, format: fmt, title: fullTitle };
 }
 
 async function playTrackAt(idx) {
   if (!tracks.length) return;
-  isPlayingOnlineStream = false;
-  currentTrackIdx = (idx + tracks.length) % tracks.length;
+  isPlayingOnlineStream = false; currentTrackIdx = (idx + tracks.length) % tracks.length;
   const t = tracks[currentTrackIdx];
   updateTrackUiHeader(t.name, t.format);
   renderLyricsBox('', '🎵 正在播放歌单曲目');
@@ -1380,13 +1400,11 @@ async function playTrackAt(idx) {
 
 audioPlayer.addEventListener('timeupdate', () => {
   if (!Capacitor.isNativePlatform() && !isUserSeeking && audioPlayer.duration) {
-    curTimeEl.textContent = fmtSec(audioPlayer.currentTime);
-    durTimeEl.textContent = fmtSec(audioPlayer.duration);
+    curTimeEl.textContent = fmtSec(audioPlayer.currentTime); durTimeEl.textContent = fmtSec(audioPlayer.duration);
     musicSeek.value = (audioPlayer.currentTime / audioPlayer.duration) * 100;
     updateActiveLyric(audioPlayer.currentTime * 1000);
   }
 });
-
 setInterval(async () => {
   if (!Capacitor.isNativePlatform() || document.visibilityState !== 'visible') return;
   try {
@@ -1399,8 +1417,7 @@ setInterval(async () => {
       updateTrackUiHeader(st.title, st.format || 'AUDIO');
     }
     if (!isUserSeeking && nativeDurationMs > 0) {
-      curTimeEl.textContent = fmtSec((st.currentMs || 0) / 1000);
-      durTimeEl.textContent = fmtSec(nativeDurationMs / 1000);
+      curTimeEl.textContent = fmtSec((st.currentMs || 0) / 1000); durTimeEl.textContent = fmtSec(nativeDurationMs / 1000);
       musicSeek.value = ((st.currentMs || 0) / nativeDurationMs) * 100;
       updateActiveLyric(st.currentMs || 0);
     }
@@ -1439,43 +1456,23 @@ async function searchOnlineMusic(query) {
   resBox.innerHTML = `<div class="sub-text" style="padding:8px;">🔍 MusicFree 引擎正在 ${plugins.length} 个音源并行搜索「${q}」...</div>`;
   const results = [];
   await Promise.allSettled(plugins.map(async ({ inst }) => {
-    try {
-      const r = await inst.search(q, 1, 'music');
-      (r?.data || []).slice(0, 10).forEach(item => results.push({ plugin: inst, item }));
-    } catch {}
+    try { const r = await inst.search(q, 1, 'music'); (r?.data || []).slice(0, 10).forEach(item => results.push({ plugin: inst, item })); } catch {}
   }));
-
   resBox.innerHTML = '';
   if (!results.length) { resBox.innerHTML = '<div class="sub-text" style="padding:8px;">未搜到结果，试试切换音源或安装更多 MusicFree 插件~</div>'; return; }
 
   results.slice(0, 24).forEach(({ plugin, item }) => {
     const row = document.createElement('div'); row.className = 'item-row';
     const title = item.title || '未知歌曲', artist = item.artist || '未知歌手';
-    row.innerHTML = `
-      <div style="display:flex; gap:10px; align-items:center; flex:1; min-width:0;">
-        ${item.artwork ? `<img src="${item.artwork}" class="cover-img" />` : `<div class="cover-img" style="display:flex;align-items:center;justify-content:center;">🎵</div>`}
-        <div style="min-width:0;">
-          <div style="font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${title}</div>
-          <div class="sub-text"><span class="badge badge-alarm">${plugin.platform}</span> ${artist}${item.album ? ' · ' + item.album : ''}</div>
-        </div>
-      </div>
-      <div style="display:flex; gap:4px; flex-shrink:0;">
-        <button class="btn btn-sm play-online">▶️</button>
-        <button class="btn btn-sm btn-outline fav-online">⭐收藏</button>
-      </div>
-    `;
-    row.querySelector('.play-online').onclick = async () => {
-      try { await playMusicFreeSong(plugin, item); }
-      catch (e) { alert('播放失败：' + e.message); }
-    };
+    row.innerHTML = `<div style="display:flex; gap:10px; align-items:center; flex:1; min-width:0;">${item.artwork ? `<img src="${item.artwork}" class="cover-img" />` : `<div class="cover-img" style="display:flex;align-items:center;justify-content:center;">🎵</div>`}<div style="min-width:0;"><div style="font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${title}</div><div class="sub-text"><span class="badge badge-alarm">${plugin.platform}</span> ${artist}${item.album ? ' · ' + item.album : ''}</div></div></div><div style="display:flex; gap:4px; flex-shrink:0;"><button class="btn btn-sm play-online">▶️</button><button class="btn btn-sm btn-outline fav-online">⭐收藏</button></div>`;
+    row.querySelector('.play-online').onclick = async () => { try { await playMusicFreeSong(plugin, item); } catch (e) { alert('播放失败：' + e.message); } };
     row.querySelector('.fav-online').onclick = async (e) => {
       e.target.textContent = '解析中...';
       try {
         const quality = document.getElementById('mfQualitySelect')?.value || 'standard';
         const m = typeof plugin.getMediaSource === 'function' ? await plugin.getMediaSource(item, quality) : { url: item.url };
         if (!m?.url) throw new Error('无法获取音频链接');
-        const hdrs = { ...(m.headers || {}) };
-        if (m.userAgent && !hdrs['User-Agent']) hdrs['User-Agent'] = m.userAgent;
+        const hdrs = { ...(m.headers || {}) }; if (m.userAgent && !hdrs['User-Agent']) hdrs['User-Agent'] = m.userAgent;
         tracks.push({ id: Date.now() + Math.random(), name: `${title} - ${artist}`, format: plugin.platform, size: 0, onlineUrl: m.url, headers: hdrs, isOnlineRef: true });
         saveTracks(); await syncPlaylistWithoutInterrupt(); e.target.textContent = '已藏✅'; e.target.disabled = true;
       } catch (err) { e.target.textContent = '⭐收藏'; alert('收藏失败：' + err.message); }
@@ -1483,13 +1480,11 @@ async function searchOnlineMusic(query) {
     resBox.appendChild(row);
   });
 }
-
 document.getElementById('searchOnlineMusicBtn').addEventListener('click', () => searchOnlineMusic(document.getElementById('onlineMusicQuery').value));
 document.getElementById('onlineMusicQuery').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchOnlineMusic(e.target.value); });
 document.getElementById('refreshOnlineMusicBtn').addEventListener('click', () => {
   const cur = document.getElementById('onlineMusicQuery').value.trim() || onlineMusicHist[0] || '华语经典';
-  document.getElementById('onlineMusicQuery').value = cur;
-  searchOnlineMusic(cur); showToast('🔄 已刷新 MusicFree 搜歌结果');
+  document.getElementById('onlineMusicQuery').value = cur; searchOnlineMusic(cur); showToast('🔄 已刷新 MusicFree 搜歌结果');
 });
 
 async function syncPlaylistWithoutInterrupt() {
@@ -1709,7 +1704,7 @@ document.getElementById('configRepoBtn').addEventListener('click', () => {
   if (val && val.trim()) { localStorage.setItem('github_stock_repo', val.trim()); fetchMarketData(true); }
 });
 
-// ==================== 9. 词典级翻译 + 零位移双击跳译 + Umi-OCR 识图翻译 ====================
+// ==================== 9. 词典级翻译 + 零位移双击跳译 + Umi-OCR 双模识图翻译 ====================
 let transHistory = JSON.parse(localStorage.getItem('trans_hist_v1') || '[]');
 let lastSrcText = '', lastSrcLang = 'en', lastTransResult = '', lastDstLang = 'zh-CN', translateReqSeq = 0;
 
@@ -1749,20 +1744,11 @@ async function fetchRichDictionary(query) {
   try {
     const yd = await httpGetJson(`https://dict.youdao.com/jsonapi?q=${encodeURIComponent(query)}`);
     const ecWord = yd?.ec?.word?.[0];
-    if (ecWord) {
-      rich.ukPhone = ecWord.ukphone || ''; rich.usPhone = ecWord.usphone || '';
-      (ecWord.trs || []).forEach(tr => { const l = tr?.tr?.[0]?.l?.i?.[0]; if (l) rich.meanings.push(l); });
-    }
+    if (ecWord) { rich.ukPhone = ecWord.ukphone || ''; rich.usPhone = ecWord.usphone || ''; (ecWord.trs || []).forEach(tr => { const l = tr?.tr?.[0]?.l?.i?.[0]; if (l) rich.meanings.push(l); }); }
     const ceWord = yd?.ce?.word?.[0];
-    if (ceWord && !rich.meanings.length) {
-      if (ceWord.phone) rich.usPhone = ceWord.phone;
-      (ceWord.trs || []).forEach(tr => { const txt = (tr?.tr?.[0]?.l?.i || []).map(p => typeof p === 'string' ? p : (p['#text'] || '')).join('').trim(); if (txt) rich.meanings.push(txt); });
-    }
+    if (ceWord && !rich.meanings.length) { if (ceWord.phone) rich.usPhone = ceWord.phone; (ceWord.trs || []).forEach(tr => { const txt = (tr?.tr?.[0]?.l?.i || []).map(p => typeof p === 'string' ? p : (p['#text'] || '')).join('').trim(); if (txt) rich.meanings.push(txt); }); }
     (yd?.phrs?.phrs || []).slice(0, 8).forEach(p => { const en = p?.phr?.headword?.l?.i, zh = p?.phr?.trs?.[0]?.tr?.l?.i; if (en && zh) rich.phrases.push({ en, zh }); });
-    (yd?.blng_sents_part?.['sentence-pair'] || []).slice(0, 6).forEach(sp => {
-      const en = (sp.sentence || sp['sentence-eng'] || '').replace(/<[^>]+>/g, ''), zh = (sp['sentence-translation'] || '').replace(/<[^>]+>/g, '');
-      if (en) rich.examples.push({ en, zh });
-    });
+    (yd?.blng_sents_part?.['sentence-pair'] || []).slice(0, 6).forEach(sp => { const en = (sp.sentence || sp['sentence-eng'] || '').replace(/<[^>]+>/g, ''), zh = (sp['sentence-translation'] || '').replace(/<[^>]+>/g, ''); if (en) rich.examples.push({ en, zh }); });
   } catch {}
   if (/^[a-zA-Z'-]+$/.test(query) && (!rich.usPhone || !rich.examples.length)) {
     try {
@@ -1824,9 +1810,7 @@ function jumpTranslateWord(wordEl) {
   wordEl.classList.add('flash'); setTimeout(() => wordEl.classList.remove('flash'), 260);
   if (navigator.vibrate) navigator.vibrate(18);
   showToast(`🔍 正在跳转翻译「${w}」`, 1600);
-  document.getElementById('transInput').value = w;
-  document.getElementById('transFrom').value = 'en';
-  document.getElementById('transTo').value = 'zh-CN';
+  document.getElementById('transInput').value = w; document.getElementById('transFrom').value = 'en'; document.getElementById('transTo').value = 'zh-CN';
   window.scrollTo({ top: 0, behavior: 'smooth' });
   const outEl = document.getElementById('transOutput');
   if (outEl) { outEl.classList.remove('jump-pulse'); requestAnimationFrame(() => outEl.classList.add('jump-pulse')); setTimeout(() => outEl.classList.remove('jump-pulse'), 650); }
@@ -1838,11 +1822,7 @@ function handleTapWordActivation(span, evt) {
   const now = Date.now(); if (now - lastWordJumpAt < 400) return;
   const isSame = (span === primedWordEl) || (primedWordText && w.toLowerCase() === primedWordText.toLowerCase());
   if (isSame && now - primedWordTime < 750) { if (evt && evt.cancelable) evt.preventDefault(); jumpTranslateWord(span); }
-  else {
-    clearPrimedWord(); primedWordEl = span; primedWordText = w; primedWordTime = now; span.classList.add('primed');
-    showToast(`👆 再点一下「${w}」跳转查词`, 1100);
-    primedClearTimer = setTimeout(() => { if (primedWordEl === span) clearPrimedWord(); }, 780);
-  }
+  else { clearPrimedWord(); primedWordEl = span; primedWordText = w; primedWordTime = now; span.classList.add('primed'); showToast(`👆 再点一下「${w}」跳转查词`, 1100); primedClearTimer = setTimeout(() => { if (primedWordEl === span) clearPrimedWord(); }, 780); }
 }
 const dictRichBoxEl = document.getElementById('dictRichBox');
 dictRichBoxEl.addEventListener('touchstart', (e) => { if (e.touches[0]) { wordTouchStartX = e.touches[0].clientX; wordTouchStartY = e.touches[0].clientY; wordTouchStartScrollY = window.scrollY; } }, { passive: true });
@@ -1874,13 +1854,8 @@ async function doTranslate(withToast = false) {
 
   let translated = '';
   const richPromise = text.length <= 45 ? fetchRichDictionary(text) : Promise.resolve(null);
-  try {
-    const g = await httpGetJson(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(from)}&tl=${encodeURIComponent(to)}&dt=t&q=${encodeURIComponent(text)}`);
-    if (Array.isArray(g?.[0])) translated = g[0].map(seg => seg?.[0] || '').join('');
-  } catch {}
-  if (!translated) {
-    try { const mm = await httpGetJson(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text.slice(0, 480))}&langpair=${encodeURIComponent(srcLang + '|' + to)}`); translated = mm?.responseData?.translatedText || ''; } catch {}
-  }
+  try { const g = await httpGetJson(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(from)}&tl=${encodeURIComponent(to)}&dt=t&q=${encodeURIComponent(text)}`); if (Array.isArray(g?.[0])) translated = g[0].map(seg => seg?.[0] || '').join(''); } catch {}
+  if (!translated) { try { const mm = await httpGetJson(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text.slice(0, 480))}&langpair=${encodeURIComponent(srcLang + '|' + to)}`); translated = mm?.responseData?.translatedText || ''; } catch {} }
   const rich = await richPromise;
   if (reqSeq !== translateReqSeq) return;
   if (!translated && rich?.meanings?.length) translated = rich.meanings[0];
@@ -1918,26 +1893,20 @@ document.getElementById('clearTransHistBtn').addEventListener('click', () => { t
 
 async function runOcrAndTranslate(fileRecord) {
   const outEl = document.getElementById('transOutput');
-  outEl.textContent = `🧠 Umi-OCR 正在识别文字 (${umiOcrConfig.serverUrl})...`;
+  outEl.textContent = umiOcrConfig.mode === 'local' ? '⚡ 本机内置 RapidOCR 离线识别中...' : `🌐 远程 Umi-OCR 识别中 (${umiOcrConfig.serverUrl})...`;
   try {
     const txt = await extractTextViaUmiOcr(fileRecord, (m) => { outEl.textContent = m; });
     if (txt && txt.trim()) { document.getElementById('transInput').value = txt.trim(); await doTranslate(false); }
-    else { outEl.textContent = 'Umi-OCR 未在图中检测到文字。'; showToast('未识别到文字'); }
+    else { outEl.textContent = '未在图中检测到文字。'; showToast('未识别到文字'); }
   } catch (e) {
     outEl.textContent = '译文将显示在这里...';
     showUmiOcrErrorModal(e.message);
   }
 }
-
 document.getElementById('ocrTranslateBtn').addEventListener('click', async () => {
   try {
-    if (Capacitor.isNativePlatform()) {
-      const res = await NativeTools.pickFiles({ accept: '*/*', multiple: false });
-      if (res.files?.[0]) await runOcrAndTranslate(res.files[0]);
-    } else {
-      pendingWebOcrCallback = (rec) => runOcrAndTranslate(rec);
-      document.getElementById('fallbackOcrFileInput').click();
-    }
+    if (Capacitor.isNativePlatform()) { const res = await NativeTools.pickFiles({ accept: '*/*', multiple: false }); if (res.files?.[0]) await runOcrAndTranslate(res.files[0]); }
+    else { pendingWebOcrCallback = (rec) => runOcrAndTranslate(rec); document.getElementById('fallbackOcrFileInput').click(); }
   } catch (e) { if (!String(e.message).includes('取消')) alert('识图翻译失败：' + e.message); }
 });
 
