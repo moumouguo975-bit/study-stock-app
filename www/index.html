@@ -68,7 +68,6 @@
       transition: background 0.25s, color 0.25s;
     }
 
-    /* 顶栏禁用系统下拉手势，确保上方滑动按钮透明毛玻璃100%跟手 */
     header {
       position: sticky; top: 0; z-index: 20;
       background: var(--primary); color: #fff;
@@ -86,7 +85,7 @@
       transition: background 0.08s ease, opacity 0.08s ease, transform 0.08s ease, border-color 0.08s ease;
     }
 
-    /* 原位按钮透明毛玻璃触控态（无光球、无外框延迟，点到/滑到谁谁立刻变透明） */
+    /* 原位按钮透明毛玻璃触控态（无小球、零延迟、100%跟手） */
     .glass-touch-active {
       background: rgba(255, 255, 255, 0.22) !important;
       backdrop-filter: blur(12px) saturate(180%) !important;
@@ -247,11 +246,7 @@
       color: var(--sub);
     }
     .lyric-line { padding: 1px 4px; border-radius: 6px; transition: color 0.15s, background 0.15s; }
-    .lyric-line.active {
-      color: var(--primary);
-      font-weight: 700;
-      background: var(--primary-light);
-    }
+    .lyric-line.active { color: var(--primary); font-weight: 700; background: var(--primary-light); }
     .ambient-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .ambient-btn { padding: 12px 8px; border-radius: 12px; border: 1px solid var(--border); background: var(--card-sub); color: var(--text); font-size: 13px; text-align: center; cursor: pointer; }
     .ambient-btn.playing { background: var(--primary-light); border-color: var(--primary); color: var(--primary); font-weight: 600; }
@@ -272,10 +267,7 @@
       white-space: pre-wrap; word-break: break-word;
       transition: box-shadow 0.25s ease, border-color 0.25s ease;
     }
-    .trans-out.jump-pulse {
-      border-color: var(--primary);
-      box-shadow: 0 0 0 3px var(--primary-light);
-    }
+    .trans-out.jump-pulse { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
     .dict-sec { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
     .dict-sec-title { font-size: 13px; font-weight: 600; color: var(--primary); margin-bottom: 6px; }
     .phrase-chip {
@@ -289,10 +281,7 @@
       user-select: none; -webkit-user-select: none; touch-action: manipulation;
       transition: background 0.12s, color 0.12s, box-shadow 0.12s;
     }
-    .tap-word.primed {
-      background: var(--primary-light); color: var(--primary);
-      box-shadow: inset 0 0 0 1px var(--primary);
-    }
+    .tap-word.primed { background: var(--primary-light); color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
     .tap-word.flash { background: var(--primary); color: #fff; }
 
     /* 颜色选择圆点 */
@@ -489,12 +478,12 @@
     </div>
   </section>
 
-  <!-- 3. 图文资料库 (Umi-OCR 驱动) -->
+  <!-- 3. 图文资料库 (Umi-OCR 同源离线 / 远程双模驱动) -->
   <section id="page-files" class="page">
     <div class="card">
       <div class="card-title">
-        <span>导入图片 / 文档 / 文字（Umi-OCR 引擎）</span>
-        <button class="btn btn-sm btn-outline" id="quickConfigUmiBtn">⚙️ Umi-OCR</button>
+        <span>导入图片 / 文档 / 文字（Umi-OCR 双模引擎）</span>
+        <button class="btn btn-sm btn-outline" id="quickConfigUmiBtn">⚙️ OCR设置</button>
       </div>
       <div class="form-grid">
         <button class="btn" id="nativeImportFileBtn">📁 导入图片/文档</button>
@@ -716,11 +705,11 @@
     </div>
   </section>
 
-  <!-- 个性化外观、触控毛玻璃与 Umi-OCR 配置弹窗 -->
+  <!-- 个性化外观、触控毛玻璃与 Umi-OCR 双模引擎设置弹窗 -->
   <div id="settingsModal" class="modal">
     <div class="modal-body">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-        <strong>🎨 外观、交互与 Umi-OCR 服务设置</strong>
+        <strong>🎨 外观、交互与 Umi-OCR 双模引擎设置</strong>
         <button class="btn btn-sm btn-danger" id="closeSettingsBtn">完成</button>
       </div>
 
@@ -785,31 +774,35 @@
 
       <div style="padding:10px; background:var(--card-sub); border-radius:10px; border:1px solid var(--border);">
         <div style="font-size:13px; font-weight:600; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
-          <span>7. 🧠 Umi-OCR 引擎接口设置</span>
+          <span>7. 🧠 Umi-OCR 双模引擎设置</span>
           <a href="https://github.com/hiroi-sora/Umi-OCR" target="_blank" rel="noopener" style="font-size:11px; color:var(--primary);">项目主页 ↗</a>
         </div>
-        <div class="sub-text" style="margin-bottom:8px;">
-          所有图片/PDF OCR 均由 Umi-OCR HTTP 服务驱动（默认端口 1224，电脑端请将 HTTP 主机设为“任何可用地址”）。
-        </div>
-        <input id="umiServerUrlInput" placeholder="例如 http://192.168.1.100:1224" style="margin-bottom:8px;" />
-        <div class="form-grid" style="margin-bottom:8px;">
+        <select id="umiEngineModeSelect" style="margin-bottom:8px;">
+          <option value="local" selected>⚡ 本机内置离线引擎（Umi-OCR 同源 RapidOCR，免电脑）</option>
+          <option value="remote">🌐 远程 Umi-OCR HTTP 服务（填电脑局域网 IP）</option>
+        </select>
+        <div id="umiRemoteFields" style="display:none; margin-bottom:8px;">
+          <div class="sub-text" style="margin-bottom:6px;">
+            请填写电脑的局域网 IP（不要填 127.0.0.1），并在电脑 Umi-OCR「高级 → HTTP 服务」选择“任何可用地址”。
+          </div>
+          <input id="umiServerUrlInput" placeholder="例如 http://192.168.1.100:1224" style="margin-bottom:8px;" />
           <select id="umiParserSelect">
-            <option value="multi_para">多栏·按自然段</option>
-            <option value="multi_line">多栏·按行</option>
-            <option value="single_para">单栏·按自然段</option>
-            <option value="single_line">单栏·按行</option>
-            <option value="none">不进行排版合并</option>
-          </select>
-          <select id="umiMaxPagesSelect">
-            <option value="1">PDF 识别前 1 页</option>
-            <option value="3" selected>PDF 识别前 3 页</option>
-            <option value="5">PDF 识别前 5 页</option>
-            <option value="10">PDF 识别前 10 页</option>
+            <option value="multi_para">远程排版：多栏·按自然段</option>
+            <option value="multi_line">远程排版：多栏·按行</option>
+            <option value="single_para">远程排版：单栏·按自然段</option>
+            <option value="single_line">远程排版：单栏·按行</option>
+            <option value="none">远程排版：不进行合并</option>
           </select>
         </div>
+        <select id="umiMaxPagesSelect" style="margin-bottom:8px;">
+          <option value="1">PDF 识别前 1 页</option>
+          <option value="3" selected>PDF 识别前 3 页</option>
+          <option value="5">PDF 识别前 5 页</option>
+          <option value="10">PDF 识别前 10 页</option>
+        </select>
         <div style="display:flex; gap:6px;">
           <button class="btn btn-sm" id="saveUmiConfigBtn" style="flex:1;">💾 保存配置</button>
-          <button class="btn btn-sm btn-green" id="testUmiConfigBtn">🔌 测试连通性</button>
+          <button class="btn btn-sm btn-green" id="testUmiConfigBtn">🔌 检测引擎</button>
         </div>
         <div id="umiStatusHint" class="sub-text" style="margin-top:6px;"></div>
       </div>
