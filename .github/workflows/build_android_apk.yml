@@ -31,7 +31,7 @@ jobs:
           npm install
           npm run build
 
-      - name: Generate Android project & inject Zero-Copy MusicService + NativeTools
+      - name: Generate Android project & inject MusicService + NativeTools (Umi-OCR Bridge)
         run: |
           npx cap add android
           python3 - << 'EOF'
@@ -62,17 +62,7 @@ jobs:
                   frames += struct.pack("<h", val)
               wf.writeframes(frames)
 
-          # 2. 注入 ML Kit 离线中英文 OCR 依赖
-          gradle_path = "android/app/build.gradle"
-          with open(gradle_path, "r", encoding="utf-8") as f:
-              gradle = f.read()
-          dep = "    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'\n"
-          if "text-recognition-chinese" not in gradle:
-              gradle = gradle.replace("dependencies {\n", "dependencies {\n" + dep, 1)
-          with open(gradle_path, "w", encoding="utf-8") as f:
-              f.write(gradle)
-
-          # 3. 写入安卓权限 & 注册后台媒体播放前台服务 MusicService
+          # 2. 写入安卓权限、开启明文HTTP(供局域网Umi-OCR直连) & 注册后台媒体前台服务 MusicService
           manifest_path = "android/app/src/main/AndroidManifest.xml"
           with open(manifest_path, "r", encoding="utf-8") as f:
               xml = f.read()
@@ -91,6 +81,8 @@ jobs:
           """
           if "FOREGROUND_SERVICE_MEDIA_PLAYBACK" not in xml:
               xml = xml.replace("<application", perms + "\n    <application", 1)
+          if "usesCleartextTraffic" not in xml:
+              xml = xml.replace("<application", '<application android:usesCleartextTraffic="true"', 1)
           service_decl = """
               <service
                   android:name=".MusicService"
@@ -105,7 +97,7 @@ jobs:
           java_dir = "android/app/src/main/java/com/personal/studyhub"
           os.makedirs(java_dir, exist_ok=True)
 
-          # 4. 零占用后台音乐服务 MusicService.java（直接读取 content:// URI 路径 & 在线流，0 复制不占额外空间）
+          # 3. 零占用后台音乐服务 MusicService.java（支持 content:// 直读 & MusicFree 自定义 Headers 流媒体）
           music_service_code = textwrap.dedent(r'''
               package com.personal.studyhub;
 
@@ -126,7 +118,11 @@ jobs:
               import android.os.IBinder;
               import android.os.PowerManager;
               import java.util.ArrayList;
+              import java.util.HashMap;
+              import java.util.Iterator;
+              import java.util.Map;
               import java.util.Random;
+              import org.json.JSONObject;
 
               public class MusicService extends Service {
                   public static MusicService instance;
@@ -136,6 +132,7 @@ jobs:
                   public static ArrayList<String> paths = new ArrayList<>();
                   public static ArrayList<String> titles = new ArrayList<>();
                   public static ArrayList<String> formats = new ArrayList<>();
+                  public static ArrayList<String> headersList = new ArrayList<>();
                   public static int currentIndex = -1;
                   public static String loopMode = "list";
                   public static float playSpeed = 1.0f;
@@ -226,6 +223,25 @@ jobs:
                       } catch (Exception ignored) {}
                   }
 
+                  private Map<String, String> parseHeadersAt(int idx) {
+                      Map<String, String> map = new HashMap<>();
+                      if (idx >= 0 && idx < headersList.size()) {
+                          String raw = headersList.get(idx);
+                          if (raw != null && !raw.isEmpty() && !"{}".equals(raw)) {
+                              try {
+                                  JSONObject obj = new JSONObject(raw);
+                                  Iterator<String> it = obj.keys();
+                                  while (it.hasNext()) {
+                                      String k = it.next();
+                                      String v = obj.optString(k, "");
+                                      if (!v.isEmpty()) map.put(k, v);
+                                  }
+                              } catch (Exception ignored) {}
+                          }
+                      }
+                      return map;
+                  }
+
                   public synchronized void playIndex(int idx) {
                       if (paths.isEmpty() || idx < 0 || idx >= paths.size()) return;
                       currentIndex = idx;
@@ -241,9 +257,15 @@ jobs:
                                   .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                                   .build()
                           );
-                          // 零拷贝关键：直接从 content:// URI 或在线流媒体 URL 解码，不复制不落盘！
                           if (source.startsWith("content://")) {
                               player.setDataSource(getApplicationContext(), Uri.parse(source));
+                          } else if (source.startsWith("http://") || source.startsWith("https://")) {
+                              Map<String, String> hdrs = parseHeadersAt(idx);
+                              if (!hdrs.isEmpty()) {
+                                  player.setDataSource(getApplicationContext(), Uri.parse(source), hdrs);
+                              } else {
+                                  player.setDataSource(source);
+                              }
                           } else {
                               player.setDataSource(source);
                           }
@@ -371,7 +393,7 @@ jobs:
           with open(os.path.join(java_dir, "MusicService.java"), "w", encoding="utf-8") as f:
               f.write(music_service_code)
 
-          # 5. NativeToolsPlugin.java（零拷贝音频路径关联 + 设备定位 + 中外双语连读TTS + OCR/文档提取 + 闹钟/日历）
+          # 4. NativeToolsPlugin.java（零拷贝音频 + MusicFree Headers + Umi-OCR 图像/PDF Base64 桥接 + 定位/TTS/闹钟/日历）
           plugin_code = textwrap.dedent(r'''
               package com.personal.studyhub;
 
@@ -382,6 +404,7 @@ jobs:
               import android.content.pm.PackageManager;
               import android.database.Cursor;
               import android.graphics.Bitmap;
+              import android.graphics.BitmapFactory;
               import android.graphics.Canvas;
               import android.graphics.Color;
               import android.graphics.pdf.PdfRenderer;
@@ -394,6 +417,7 @@ jobs:
               import android.provider.OpenableColumns;
               import android.speech.tts.TextToSpeech;
               import android.speech.tts.UtteranceProgressListener;
+              import android.util.Base64;
               import android.webkit.MimeTypeMap;
               import androidx.activity.result.ActivityResult;
               import androidx.core.content.ContextCompat;
@@ -404,10 +428,6 @@ jobs:
               import com.getcapacitor.PluginMethod;
               import com.getcapacitor.annotation.ActivityCallback;
               import com.getcapacitor.annotation.CapacitorPlugin;
-              import com.google.mlkit.vision.common.InputImage;
-              import com.google.mlkit.vision.text.TextRecognition;
-              import com.google.mlkit.vision.text.TextRecognizer;
-              import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
               import java.io.BufferedReader;
               import java.io.ByteArrayOutputStream;
               import java.io.File;
@@ -526,7 +546,7 @@ jobs:
                       }
                   }
 
-                  // 零拷贝音频选择器：只获取持久化 URI 权限，绝不复制文件、0 字节额外存储！
+                  // 零拷贝音频选择器：只获取持久化 URI 权限，绝不复制文件、0 字节额外存储
                   @PluginMethod
                   public void pickAudioRefs(PluginCall call) {
                       Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -611,7 +631,6 @@ jobs:
                       }
                   }
 
-                  // 静默更新歌单列表，绝不打断正在播放的歌曲！
                   @PluginMethod
                   public void audioUpdatePlaylist(PluginCall call) {
                       try {
@@ -626,15 +645,19 @@ jobs:
                       JSArray pArr = call.getArray("paths");
                       JSArray tArr = call.getArray("titles");
                       JSArray fArr = call.getArray("formats");
+                      JSArray hArr = call.getArray("headers");
                       ArrayList<String> ps = new ArrayList<>();
                       ArrayList<String> ts = new ArrayList<>();
                       ArrayList<String> fs = new ArrayList<>();
+                      ArrayList<String> hs = new ArrayList<>();
                       if (pArr != null) for (int i = 0; i < pArr.length(); i++) ps.add(pArr.getString(i));
                       if (tArr != null) for (int i = 0; i < tArr.length(); i++) ts.add(tArr.getString(i));
                       if (fArr != null) for (int i = 0; i < fArr.length(); i++) fs.add(fArr.getString(i));
+                      if (hArr != null) for (int i = 0; i < hArr.length(); i++) hs.add(hArr.optString(i, "{}"));
                       MusicService.paths = ps;
                       MusicService.titles = ts;
                       MusicService.formats = fs;
+                      MusicService.headersList = hs;
                   }
 
                   @PluginMethod public void audioPause(PluginCall call) { if (MusicService.instance != null) MusicService.instance.pause(); call.resolve(); }
@@ -679,7 +702,7 @@ jobs:
                       call.resolve(ret);
                   }
 
-                  // 图片/文档导入（供离线资料库与 OCR 识课表使用）
+                  // 图片/文档/JS插件导入
                   @PluginMethod
                   public void pickFiles(PluginCall call) {
                       Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -762,43 +785,108 @@ jobs:
                       call.resolve();
                   }
 
+                  // 纯文本与 Office XML 直解；图片/PDF 自动转为纯 Base64 图像数组交给 Umi-OCR 引擎识别
                   @PluginMethod
                   public void extractText(PluginCall call) {
                       String path = call.getString("localPath", "");
+                      int maxPages = call.getInt("maxPages", 3);
                       File file = new File(path);
                       if (path.isEmpty() || !file.exists()) { call.reject("文件不存在"); return; }
                       String lower = file.getName().toLowerCase(Locale.ROOT);
                       try {
-                          if (lower.endsWith(".txt") || lower.endsWith(".csv") || lower.endsWith(".md") || lower.endsWith(".json")) {
+                          if (lower.endsWith(".txt") || lower.endsWith(".csv") || lower.endsWith(".md") || lower.endsWith(".json") || lower.endsWith(".js")) {
                               StringBuilder sb = new StringBuilder();
                               try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
                                   String line; while ((line = br.readLine()) != null) sb.append(line).append("\n");
                               }
-                              JSObject ret = new JSObject(); ret.put("text", sb.toString()); call.resolve(ret); return;
+                              JSObject ret = new JSObject();
+                              ret.put("text", sb.toString());
+                              ret.put("needsOcr", false);
+                              call.resolve(ret);
+                              return;
                           }
                           if (lower.endsWith(".docx") || lower.endsWith(".xlsx") || lower.endsWith(".pptx")) {
-                              JSObject ret = new JSObject(); ret.put("text", extractOfficeXmlText(file)); call.resolve(ret); return;
+                              JSObject ret = new JSObject();
+                              ret.put("text", extractOfficeXmlText(file));
+                              ret.put("needsOcr", false);
+                              call.resolve(ret);
+                              return;
                           }
                           if (lower.endsWith(".pdf")) {
-                              ParcelFileDescriptor pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
-                              PdfRenderer renderer = new PdfRenderer(pfd);
-                              if (renderer.getPageCount() == 0) { renderer.close(); pfd.close(); call.reject("PDF为空"); return; }
-                              PdfRenderer.Page page = renderer.openPage(0);
-                              Bitmap bmp = Bitmap.createBitmap(page.getWidth() * 2, page.getHeight() * 2, Bitmap.Config.ARGB_8888);
-                              Canvas canvas = new Canvas(bmp); canvas.drawColor(Color.WHITE);
-                              page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
-                              page.close(); renderer.close(); pfd.close();
-                              runOcr(InputImage.fromBitmap(bmp, 0), call); return;
+                              JSArray imgs = renderPdfToBase64List(file, Math.max(1, Math.min(10, maxPages)));
+                              JSObject ret = new JSObject();
+                              ret.put("needsOcr", true);
+                              ret.put("images", imgs);
+                              call.resolve(ret);
+                              return;
                           }
-                          runOcr(InputImage.fromFilePath(getContext(), Uri.fromFile(file)), call);
-                      } catch (Exception e) { call.reject("解析失败: " + e.getMessage()); }
+                          String b64 = encodeImageFileToBase64(file);
+                          JSArray imgs = new JSArray();
+                          imgs.put(b64);
+                          JSObject ret = new JSObject();
+                          ret.put("needsOcr", true);
+                          ret.put("images", imgs);
+                          call.resolve(ret);
+                      } catch (Exception e) {
+                          call.reject("文件预处理失败: " + e.getMessage());
+                      }
                   }
 
-                  private void runOcr(InputImage image, PluginCall call) {
-                      TextRecognizer recognizer = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
-                      recognizer.process(image)
-                          .addOnSuccessListener(vt -> { JSObject ret = new JSObject(); ret.put("text", vt.getText()); call.resolve(ret); })
-                          .addOnFailureListener(e -> call.reject("OCR失败: " + e.getMessage()));
+                  private String bitmapToBase64Jpeg(Bitmap bmp) {
+                      ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                      bmp.compress(Bitmap.CompressFormat.JPEG, 88, baos);
+                      return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
+                  }
+
+                  private String encodeImageFileToBase64(File file) throws Exception {
+                      BitmapFactory.Options bounds = new BitmapFactory.Options();
+                      bounds.inJustDecodeBounds = true;
+                      BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+                      int maxSide = Math.max(bounds.outWidth, bounds.outHeight);
+                      BitmapFactory.Options opts = new BitmapFactory.Options();
+                      int sample = 1;
+                      while (maxSide / sample > 2200) sample *= 2;
+                      opts.inSampleSize = sample;
+                      Bitmap bmp = BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
+                      if (bmp == null) throw new Exception("无法解码该图片文件");
+                      try {
+                          return bitmapToBase64Jpeg(bmp);
+                      } finally {
+                          bmp.recycle();
+                      }
+                  }
+
+                  private JSArray renderPdfToBase64List(File file, int maxPages) throws Exception {
+                      JSArray arr = new JSArray();
+                      ParcelFileDescriptor pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
+                      PdfRenderer renderer = new PdfRenderer(pfd);
+                      try {
+                          int count = Math.min(renderer.getPageCount(), maxPages);
+                          if (count <= 0) throw new Exception("PDF 文件为空");
+                          for (int i = 0; i < count; i++) {
+                              PdfRenderer.Page page = renderer.openPage(i);
+                              try {
+                                  float scale = Math.min(2.0f, 1800f / Math.max(1, Math.max(page.getWidth(), page.getHeight())));
+                                  int w = Math.max(1, Math.round(page.getWidth() * scale));
+                                  int h = Math.max(1, Math.round(page.getHeight() * scale));
+                                  Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                                  try {
+                                      Canvas canvas = new Canvas(bmp);
+                                      canvas.drawColor(Color.WHITE);
+                                      page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                                      arr.put(bitmapToBase64Jpeg(bmp));
+                                  } finally {
+                                      bmp.recycle();
+                                  }
+                              } finally {
+                                  page.close();
+                              }
+                          }
+                      } finally {
+                          renderer.close();
+                          pfd.close();
+                      }
+                      return arr;
                   }
 
                   private String extractOfficeXmlText(File file) throws Exception {
@@ -861,7 +949,7 @@ jobs:
           with open(os.path.join(java_dir, "NativeToolsPlugin.java"), "w", encoding="utf-8") as f:
               f.write(plugin_code)
 
-          # 6. MainActivity 注册插件
+          # 5. MainActivity 注册插件
           main_activity = textwrap.dedent("""
               package com.personal.studyhub;
 
