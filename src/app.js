@@ -4,11 +4,13 @@ import CryptoJS from 'crypto-js';
 import dayjs from 'dayjs';
 import he from 'he';
 import qs from 'qs';
+import { getOcrConfig, saveOcrConfig, fileBlobToBase64, extractTextWithOcr, testOcrEngine } from './ocr-web.js';
+import { initPandaPet, getPandaConfig, setPandaVisible, openPandaConfigModal } from './panda-pet.js';
+import { initSchedulePro, getTodayCoursesSummary, getUpcomingExamSummary, showSmartImportReviewModal } from './schedule-pro.js';
 
 const NativeTools = registerPlugin('NativeTools');
 const DEFAULT_GITHUB_REPO = 'moumouguo975-bit/study-stock-app';
 const DAYS_LABEL = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-const RRULE_DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
 // ==================== 通用工具 ====================
 let toastTimer = null;
@@ -39,19 +41,7 @@ async function httpGetText(url, extraHeaders = {}) {
   return await (await fetch(url)).text();
 }
 
-async function httpPostJson(url, payload, extraHeaders = {}) {
-  const headers = { 'Content-Type': 'application/json', ...extraHeaders };
-  if (Capacitor.isNativePlatform()) {
-    const res = await CapacitorHttp.post({ url, headers, data: payload });
-    if (res.status >= 400) throw new Error(`HTTP ${res.status}`);
-    return typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
-  }
-  const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  return await resp.json();
-}
-
-// ==================== 0. 个性化外观与 Umi-OCR 双模引擎设置 ====================
+// ==================== 0. 个性化外观、小熊猫开关与 OCR 设置 ====================
 const FONT_MAP = {
   system: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   serif: '"Noto Serif SC", "Songti SC", Georgia, serif',
@@ -62,12 +52,6 @@ const FONT_MAP = {
 let appPrefs = JSON.parse(localStorage.getItem('app_prefs_v2') || 'null') || {
   color: '#4f46e5', darkMode: 'system', glass: true, slideDwell: true, fontFamily: 'system', fontSize: '14px'
 };
-let umiOcrConfig = JSON.parse(localStorage.getItem('umi_ocr_cfg_v2') || 'null') || {
-  mode: 'local',
-  serverUrl: 'http://192.168.1.100:1224',
-  parser: 'multi_para',
-  maxPages: 3
-};
 const darkMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
 
 function hexToSoftBg(hex) {
@@ -75,33 +59,41 @@ function hexToSoftBg(hex) {
   return `rgba(${parseInt(c.slice(0, 2), 16) || 79}, ${parseInt(c.slice(2, 4), 16) || 70}, ${parseInt(c.slice(4, 6), 16) || 229}, 0.14)`;
 }
 
-function toggleUmiRemoteVisibility() {
-  const mode = document.getElementById('umiEngineModeSelect')?.value || 'local';
-  const box = document.getElementById('umiRemoteFields');
-  if (box) box.style.display = mode === 'remote' ? 'block' : 'none';
+function toggleOcrModeFields() {
+  const mode = document.getElementById('umiEngineModeSelect')?.value || 'web';
+  const webBox = document.getElementById('webOcrFields');
+  const remBox = document.getElementById('umiRemoteFields');
+  if (webBox) webBox.style.display = mode === 'web' ? 'block' : 'none';
+  if (remBox) remBox.style.display = mode === 'remote' ? 'block' : 'none';
 }
 
-function syncUmiConfigToSettingsUI() {
+function syncOcrSettingsUI() {
+  const cfg = getOcrConfig();
   const modeEl = document.getElementById('umiEngineModeSelect');
+  const keyEl = document.getElementById('webOcrKeyInput');
+  const engEl = document.getElementById('webOcrEngineSelect');
   const u = document.getElementById('umiServerUrlInput');
   const p = document.getElementById('umiParserSelect');
   const m = document.getElementById('umiMaxPagesSelect');
-  if (modeEl) modeEl.value = umiOcrConfig.mode || 'local';
-  if (u) u.value = umiOcrConfig.serverUrl || 'http://192.168.1.100:1224';
-  if (p) p.value = umiOcrConfig.parser || 'multi_para';
-  if (m) m.value = String(umiOcrConfig.maxPages || 3);
-  toggleUmiRemoteVisibility();
+  if (modeEl) modeEl.value = cfg.mode || 'web';
+  if (keyEl) keyEl.value = cfg.webApiKey || '';
+  if (engEl) engEl.value = cfg.webEngine || '2';
+  if (u) u.value = cfg.serverUrl || 'http://192.168.1.100:1224';
+  if (p) p.value = cfg.parser || 'multi_para';
+  if (m) m.value = String(cfg.maxPages || 3);
+  toggleOcrModeFields();
 }
 
-function saveUmiConfigFromUI() {
+function saveOcrSettingsFromUI() {
   const rawUrl = (document.getElementById('umiServerUrlInput')?.value || '').trim().replace(/\/+$/, '');
-  umiOcrConfig = {
-    mode: document.getElementById('umiEngineModeSelect')?.value || 'local',
+  return saveOcrConfig({
+    mode: document.getElementById('umiEngineModeSelect')?.value || 'web',
+    webApiKey: (document.getElementById('webOcrKeyInput')?.value || '').trim(),
+    webEngine: document.getElementById('webOcrEngineSelect')?.value || '2',
     serverUrl: rawUrl || 'http://192.168.1.100:1224',
     parser: document.getElementById('umiParserSelect')?.value || 'multi_para',
     maxPages: Number(document.getElementById('umiMaxPagesSelect')?.value || 3)
-  };
-  localStorage.setItem('umi_ocr_cfg_v2', JSON.stringify(umiOcrConfig));
+  });
 }
 
 function applyAppearance() {
@@ -119,12 +111,13 @@ function applyAppearance() {
   document.getElementById('darkModeSelect').value = appPrefs.darkMode || 'system';
   document.getElementById('glassModeToggle').checked = !!appPrefs.glass;
   document.getElementById('slideDwellToggle').checked = appPrefs.slideDwell !== false;
+  document.getElementById('pandaVisibleToggle').checked = getPandaConfig().visible !== false;
   document.getElementById('fontFamilySelect').value = appPrefs.fontFamily || 'system';
   document.getElementById('fontSizeSelect').value = appPrefs.fontSize || '14px';
   document.querySelectorAll('#colorSwatches .swatch').forEach(s => {
     s.classList.toggle('active', s.dataset.color.toLowerCase() === (appPrefs.color || '').toLowerCase());
   });
-  syncUmiConfigToSettingsUI();
+  syncOcrSettingsUI();
 }
 
 function savePrefs() {
@@ -135,63 +128,47 @@ function savePrefs() {
 darkMediaQuery.addEventListener?.('change', applyAppearance);
 const settingsModal = document.getElementById('settingsModal');
 document.getElementById('openSettingsBtn').addEventListener('click', () => { applyAppearance(); settingsModal.classList.add('open'); });
-document.getElementById('closeSettingsBtn').addEventListener('click', () => { saveUmiConfigFromUI(); settingsModal.classList.remove('open'); });
-settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) { saveUmiConfigFromUI(); settingsModal.classList.remove('open'); } });
+document.getElementById('closeSettingsBtn').addEventListener('click', () => { saveOcrSettingsFromUI(); settingsModal.classList.remove('open'); });
+settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) { saveOcrSettingsFromUI(); settingsModal.classList.remove('open'); } });
 document.querySelectorAll('#colorSwatches .swatch').forEach(s => s.addEventListener('click', () => { appPrefs.color = s.dataset.color; savePrefs(); }));
 document.getElementById('customColorPicker').addEventListener('input', (e) => { appPrefs.color = e.target.value; savePrefs(); });
 document.getElementById('darkModeSelect').addEventListener('change', (e) => { appPrefs.darkMode = e.target.value; savePrefs(); });
 document.getElementById('glassModeToggle').addEventListener('change', (e) => { appPrefs.glass = e.target.checked; savePrefs(); });
 document.getElementById('slideDwellToggle').addEventListener('change', (e) => { appPrefs.slideDwell = e.target.checked; savePrefs(); });
+document.getElementById('pandaVisibleToggle').addEventListener('change', (e) => {
+  setPandaVisible(e.target.checked);
+  showToast(e.target.checked ? '🐼 已显示小熊猫桌宠' : '已隐藏小熊猫桌宠');
+});
+document.getElementById('openPandaCfgFromSettingsBtn').addEventListener('click', () => {
+  settingsModal.classList.remove('open');
+  openPandaConfigModal();
+});
 document.getElementById('fontFamilySelect').addEventListener('change', (e) => { appPrefs.fontFamily = e.target.value; savePrefs(); });
 document.getElementById('fontSizeSelect').addEventListener('change', (e) => { appPrefs.fontSize = e.target.value; savePrefs(); });
-document.getElementById('umiEngineModeSelect').addEventListener('change', toggleUmiRemoteVisibility);
+document.getElementById('umiEngineModeSelect').addEventListener('change', toggleOcrModeFields);
 
 document.getElementById('saveUmiConfigBtn').addEventListener('click', () => {
-  saveUmiConfigFromUI();
-  const label = umiOcrConfig.mode === 'local' ? '本机内置离线引擎 (RapidOCR)' : `远程服务 (${umiOcrConfig.serverUrl})`;
+  const cfg = saveOcrSettingsFromUI();
+  const label = cfg.mode === 'web' ? `免费网页 OCR (Engine ${cfg.webEngine})` : (cfg.mode === 'local' ? '本机离线 OCR' : `远程 Umi-OCR (${cfg.serverUrl})`);
   document.getElementById('umiStatusHint').textContent = `✅ 已保存：${label}`;
   showToast('✅ OCR 配置已保存');
 });
 
 document.getElementById('testUmiConfigBtn').addEventListener('click', async () => {
-  saveUmiConfigFromUI();
+  saveOcrSettingsFromUI();
   const hint = document.getElementById('umiStatusHint');
-  if (umiOcrConfig.mode === 'local') {
-    if (!Capacitor.isNativePlatform()) {
-      hint.textContent = 'ℹ️ 本机内置 RapidOCR 需在安卓 APK 中运行；浏览器预览可切换为远程 Umi-OCR 模式。';
-      return;
-    }
-    hint.textContent = '⚡ 正在初始化并检测本机内置 RapidOCR 离线引擎...';
-    try {
-      const res = await NativeTools.testLocalOcr();
-      hint.textContent = `✅ ${res?.engine || '本机离线 OCR'} 已就绪！免电脑、断网可用。`;
-      showToast('✅ 本机离线 OCR 引擎就绪');
-    } catch (e) {
-      hint.textContent = `❌ 本机引擎初始化失败：${e.message}`;
-      showToast('❌ 本机 OCR 初始化失败');
-    }
-    return;
-  }
-
-  if (Capacitor.isNativePlatform() && /^https?:\/\/(127\.0\.0\.1|localhost)/i.test(umiOcrConfig.serverUrl)) {
-    hint.textContent = '⚠️ 手机上填 127.0.0.1 会连向手机自己！请改为电脑局域网 IP（如 http://192.168.1.100:1224），或切回「本机内置离线引擎」。';
-    showToast('⚠️ 手机端不能填 127.0.0.1');
-    return;
-  }
-
-  hint.textContent = `🔌 正在连接 ${umiOcrConfig.serverUrl}/api/ocr/get_options ...`;
+  hint.textContent = '🔌 正在测试当前 OCR 引擎...';
   try {
-    const res = await httpGetJson(`${umiOcrConfig.serverUrl}/api/ocr/get_options`);
-    const keys = res && typeof res === 'object' ? Object.keys(res).length : 0;
-    hint.textContent = `✅ 远程 Umi-OCR 连接成功！检测到 ${keys} 项参数。`;
-    showToast('✅ 远程 Umi-OCR 连接成功');
+    const msg = await testOcrEngine({ NativeTools, isNative: Capacitor.isNativePlatform() });
+    hint.textContent = msg;
+    showToast('✅ OCR 引擎测试通过');
   } catch (e) {
-    hint.textContent = `❌ 连接失败：${e.message}（若无电脑服务，建议上方切回“本机内置离线引擎”）`;
-    showToast('❌ 远程 Umi-OCR 无法连接');
+    hint.textContent = `❌ 测试失败：${e.message}`;
+    showToast('❌ OCR 测试失败');
   }
 });
 
-// ==================== 1. 底栏液态毛玻璃 + 原位按钮透明毛玻璃触控（无小球、100%跟手） ====================
+// ==================== 1. 底栏液态毛玻璃 + 原位按钮透明毛玻璃触控（无光球、100%跟手） ====================
 const bottomNav = document.getElementById('bottomNav');
 const navIndicator = document.getElementById('navGlassIndicator');
 const navBtns = Array.from(bottomNav.querySelectorAll('button'));
@@ -202,19 +179,16 @@ function updateNavIndicatorPosition(idx) {
   navIndicator.style.transform = `translate3d(${idx * tabW}px, 0, 0) scale(1)`;
 }
 function setNavIndicatorDragX(clientX) {
-  const rect = bottomNav.getBoundingClientRect();
-  if (!rect.width) return;
+  const rect = bottomNav.getBoundingClientRect(); if (!rect.width) return;
   const tabW = rect.width / navBtns.length;
   const clampedX = Math.max(0, Math.min(rect.width - tabW, clientX - rect.left - tabW / 2));
   navIndicator.style.transform = `translate3d(${clampedX.toFixed(2)}px, 0, 0) scale(1.05)`;
 }
 function switchTabByIndex(idx, withHaptic = false, snapIndicator = true) {
   if (idx < 0 || idx >= navBtns.length) return;
-  const changed = idx !== currentTabIdx;
-  currentTabIdx = idx;
+  const changed = idx !== currentTabIdx; currentTabIdx = idx;
   const targetBtn = navBtns[idx];
-  navBtns.forEach(b => b.classList.remove('active'));
-  targetBtn.classList.add('active');
+  navBtns.forEach(b => b.classList.remove('active')); targetBtn.classList.add('active');
   document.getElementById('headerTitle').textContent = targetBtn.dataset.title;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById(`page-${targetBtn.dataset.tab}`).classList.add('active');
@@ -223,11 +197,9 @@ function switchTabByIndex(idx, withHaptic = false, snapIndicator = true) {
 }
 window.addEventListener('resize', () => { if (!navDragging) updateNavIndicatorPosition(currentTabIdx); });
 function handleNavSlideAt(clientX) {
-  const rect = bottomNav.getBoundingClientRect();
-  if (!rect.width) return;
+  const rect = bottomNav.getBoundingClientRect(); if (!rect.width) return;
   const idx = Math.floor(Math.max(0, Math.min(0.9999, (clientX - rect.left) / rect.width)) * navBtns.length);
-  setNavIndicatorDragX(clientX);
-  switchTabByIndex(idx, true, false);
+  setNavIndicatorDragX(clientX); switchTabByIndex(idx, true, false);
 }
 navBtns.forEach((btn, idx) => btn.addEventListener('click', () => {
   navDragging = false; navIndicator.classList.remove('dragging'); switchTabByIndex(idx, false, true);
@@ -275,22 +247,18 @@ document.getElementById('topHeader').addEventListener('touchmove', (e) => {
 }, { passive: false });
 document.addEventListener('touchstart', (e) => {
   if (appPrefs.slideDwell === false) return;
-  if (e.target.closest('#bottomNav') || e.target.closest('input, textarea, select')) return;
+  if (e.target.closest('#bottomNav, #pandaPet, input, textarea, select, .tap-word')) return;
   const t = e.touches[0]; if (!t) return;
-  glassTouchStartScrollY = window.scrollY;
-  glassSlideMoved = false;
+  glassTouchStartScrollY = window.scrollY; glassSlideMoved = false;
   glassStartInHeader = !!(e.target instanceof Element && e.target.closest('#topHeader'));
   const el = e.target instanceof Element ? e.target.closest(INTERACTIVE_SEL) : null;
-  glassStartEl = el;
-  setGlassTouchActive(el);
+  glassStartEl = el; setGlassTouchActive(el);
 }, { passive: true });
 document.addEventListener('touchmove', (e) => {
   if (appPrefs.slideDwell === false) return;
-  if (e.target.closest('#bottomNav') || e.target.closest('input[type="range"]')) return;
+  if (e.target.closest('#bottomNav, #pandaPet, input[type="range"], .tap-word')) return;
   const t = e.touches[0]; if (!t) return;
-  if (!glassStartInHeader && Math.abs(window.scrollY - glassTouchStartScrollY) > 10) {
-    setGlassTouchActive(null); return;
-  }
+  if (!glassStartInHeader && Math.abs(window.scrollY - glassTouchStartScrollY) > 10) { setGlassTouchActive(null); return; }
   glassSlideMoved = true;
   const hit = document.elementFromPoint(t.clientX, t.clientY);
   setGlassTouchActive(hit ? hit.closest(INTERACTIVE_SEL) : null);
@@ -299,10 +267,7 @@ document.addEventListener('touchend', () => {
   const target = glassActiveEl;
   const movedToOther = target && glassSlideMoved && target !== glassStartEl;
   if (movedToOther && (glassStartInHeader || target.closest('#topHeader'))) {
-    clearGlassTouchActive();
-    glassSuppressClickUntil = Date.now() + 350;
-    target.click();
-    return;
+    clearGlassTouchActive(); glassSuppressClickUntil = Date.now() + 350; target.click(); return;
   }
   clearGlassTouchActive();
 }, { passive: true });
@@ -312,7 +277,7 @@ document.addEventListener('click', (e) => {
   if (Date.now() < glassSuppressClickUntil && e.isTrusted) { e.stopPropagation(); e.preventDefault(); }
 }, true);
 
-// ==================== 2. 双时区参考 + 中外双源天气 + 切地区即时建议 ====================
+// ==================== 2. 双时区参考 + 双源天气 + 智能建议 ====================
 const DEVICE_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai';
 let savedCities = JSON.parse(localStorage.getItem('weather_cities_v3') || '[]');
 let dismissedAutoIds = JSON.parse(localStorage.getItem('dismissed_auto_cities_v1') || '[]');
@@ -333,11 +298,10 @@ const BUILTIN_CITIES = {
   '贵阳': [26.647, 106.630, 'Asia/Shanghai'], '海口': [20.044, 110.200, 'Asia/Shanghai'], '三亚': [18.253, 109.512, 'Asia/Shanghai'],
   '兰州': [36.061, 103.834, 'Asia/Shanghai'], '拉萨': [29.653, 91.172, 'Asia/Shanghai'], '乌鲁木齐': [43.826, 87.617, 'Asia/Shanghai'],
   '南昌': [28.683, 115.858, 'Asia/Shanghai'], '长春': [43.817, 125.324, 'Asia/Shanghai'], '无锡': [31.491, 120.312, 'Asia/Shanghai'],
-  '佛山': [23.022, 113.121, 'Asia/Shanghai'], '东莞': [23.021, 113.752, 'Asia/Shanghai'], '珠海': [22.271, 113.577, 'Asia/Shanghai'],
   '香港': [22.319, 114.169, 'Asia/Hong_Kong'], '澳门': [22.199, 113.544, 'Asia/Macau'], '台北': [25.033, 121.565, 'Asia/Taipei'],
   '东京': [35.676, 139.650, 'Asia/Tokyo'], '首尔': [37.567, 126.978, 'Asia/Seoul'], '新加坡': [1.352, 103.820, 'Asia/Singapore'],
-  '纽约': [40.713, -74.006, 'America/New_York'], '洛杉矶': [34.052, -118.244, 'America/Los_Angeles'], '旧金山': [37.775, -122.419, 'America/Los_Angeles'],
-  '伦敦': [51.507, -0.128, 'Europe/London'], '巴黎': [48.857, 2.352, 'Europe/Paris'], '悉尼': [-33.869, 151.209, 'Australia/Sydney']
+  '纽约': [40.713, -74.006, 'America/New_York'], '洛杉矶': [34.052, -118.244, 'America/Los_Angeles'], '伦敦': [51.507, -0.128, 'Europe/London'],
+  '巴黎': [48.857, 2.352, 'Europe/Paris'], '悉尼': [-33.869, 151.209, 'Australia/Sydney']
 };
 const WMO_MAP = {
   0: ['☀️', '晴朗'], 1: ['🌤️', '晴间多云'], 2: ['⛅', '多云'], 3: ['☁️', '阴天'],
@@ -434,13 +398,13 @@ function buildSmartAdvice(cityObj, overrideLabel, temp, precip, code) {
 
   if ((city.kind === 'device' || city.kind === 'synced') && !overrideLabel) {
     const now = new Date();
-    const todayCourses = courses.filter(c => Number(c.day) === now.getDay()).sort((a, b) => a.start.localeCompare(b.start));
+    const { currentWeek, todayCourses } = getTodayCoursesSummary();
     if (todayCourses.length) {
       const hm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
       const nextC = todayCourses.find(c => c.start >= hm);
-      tips.push(nextC ? `📚 今日共 ${todayCourses.length} 节课，下一节《${nextC.name}》(${nextC.start} ${nextC.room || ''})。` : `✅ 今日 ${todayCourses.length} 节课已上完，听歌放松吧！`);
+      tips.push(nextC ? `📚 第${currentWeek}周今日共 ${todayCourses.length} 节课，下一节《${nextC.name}》(${nextC.start} ${nextC.room || ''})。` : `✅ 第${currentWeek}周今日 ${todayCourses.length} 节课已上完，放松一下吧！`);
     }
-    const upcoming = exams.filter(e => new Date(e.datetime).getTime() > Date.now()).sort((a, b) => new Date(a.datetime) - new Date(b.datetime))[0];
+    const upcoming = getUpcomingExamSummary()[0];
     if (upcoming) {
       const days = Math.ceil((new Date(upcoming.datetime).getTime() - Date.now()) / 86400000);
       if (days <= 7) tips.push(`🎯 距离【${upcoming.name}】仅剩 ${days} 天，记得安排冲刺复习！`);
@@ -532,7 +496,6 @@ async function detectDeviceAndNetworkZones(resetDismissed = false) {
   }
   if (!devLoc) devLoc = { name: '北京', lat: 39.904, lon: 116.407, timezone: DEVICE_TZ };
   deviceRefInfo = devLoc;
-
   const isMismatch = !!(networkRefInfo && networkRefInfo.timezone !== deviceRefInfo.timezone);
   const upsert = (id, data) => { if (dismissedAutoIds.includes(id)) return; const idx = savedCities.findIndex(c => c.id === id); if (idx >= 0) savedCities[idx] = { ...savedCities[idx], ...data, id }; else savedCities.unshift({ id, ...data }); };
   if (isMismatch) { upsert('auto_network', { kind: 'network', ...networkRefInfo }); upsert('auto_device', { kind: 'device', ...deviceRefInfo }); }
@@ -616,13 +579,13 @@ async function cancelReminder(id) { if (id && Capacitor.isNativePlatform()) { tr
 document.getElementById('testAlarmBtn').addEventListener('click', () => {
   const box = document.createElement('div');
   box.innerHTML = `<p class="sub-text" style="margin-bottom:10px;">【系统闹钟】和【系统日历】写入手机底层，关掉 App 依然准时响！</p><button class="btn" id="t5s" style="width:100%; margin-bottom:8px;">🔔 App 5秒后连续响铃</button><button class="btn btn-warn" id="tSys" style="width:100%; margin-bottom:8px;">📱 写入【系统时钟闹钟】(1分钟后)</button><button class="btn btn-green" id="tCal" style="width:100%;">📅 写入【系统日历日程】(10分钟后)</button>`;
-  box.querySelector('#t5s').onclick = async () => { modal.classList.remove('open'); await scheduleAppReminder({ id: makeSafeNotifId(), title: '响铃闹钟测试', body: '15秒连续闹铃正常！', atDate: new Date(Date.now() + 5000), mode: 'alarm' }); setTimeout(() => { if (document.visibilityState === 'visible') startRingingOverlay('响铃闹钟测试', '铃声正常响起！'); }, 5200); showToast('⏰ 5 秒后开始响铃！'); };
-  box.querySelector('#tSys').onclick = async () => { modal.classList.remove('open'); const d = new Date(Date.now() + 65000); await syncToDeviceAlarm({ hour: d.getHours(), minute: d.getMinutes(), message: '学财助手系统闹钟测试' }); };
-  box.querySelector('#tCal').onclick = async () => { modal.classList.remove('open'); const s = Date.now() + 600000; await syncToDeviceCalendar({ title: '学财助手日程提醒测试', location: '自习室', description: '关App依然有效', startTimeMs: s, endTimeMs: s + 1800000 }); };
+  box.querySelector('#t5s').onclick = async () => { closeModal(); await scheduleAppReminder({ id: makeSafeNotifId(), title: '响铃闹钟测试', body: '15秒连续闹铃正常！', atDate: new Date(Date.now() + 5000), mode: 'alarm' }); setTimeout(() => { if (document.visibilityState === 'visible') startRingingOverlay('响铃闹钟测试', '铃声正常响起！'); }, 5200); showToast('⏰ 5 秒后开始响铃！'); };
+  box.querySelector('#tSys').onclick = async () => { closeModal(); const d = new Date(Date.now() + 65000); await syncToDeviceAlarm({ hour: d.getHours(), minute: d.getMinutes(), message: '学财助手系统闹钟测试' }); };
+  box.querySelector('#tCal').onclick = async () => { closeModal(); const s = Date.now() + 600000; await syncToDeviceCalendar({ title: '学财助手日程提醒测试', location: '自习室', description: '关App依然有效', startTimeMs: s, endTimeMs: s + 1800000 }); };
   openModal('⏰ 多样提醒与设备同步测试', box);
 });
 
-// ==================== 4. 通用弹窗 & Umi-OCR 双模统一引擎（本机 RapidOCR 离线 + 远程 HTTP） ====================
+// ==================== 4. 通用弹窗 & 网页 OCR 识别桥接 ====================
 const modal = document.getElementById('modal');
 const modalTitle = document.getElementById('modalTitle');
 const modalContent = document.getElementById('modalContent');
@@ -633,145 +596,26 @@ function openModal(title, htmlOrNode) {
   else modalContent.appendChild(htmlOrNode);
   modal.classList.add('open');
 }
-document.getElementById('closeModalBtn').addEventListener('click', () => modal.classList.remove('open'));
-modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
+function closeModal() { modal.classList.remove('open'); }
+document.getElementById('closeModalBtn').addEventListener('click', closeModal);
+modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
 
-async function callUmiOcrOnBase64(base64Str) {
-  const baseUrl = (umiOcrConfig.serverUrl || 'http://192.168.1.100:1224').replace(/\/+$/, '');
-  const cleanB64 = String(base64Str || '').replace(/^data:[^;]+;base64,/, '');
-  if (!cleanB64) throw new Error('图像 Base64 为空');
-  const res = await httpPostJson(`${baseUrl}/api/ocr`, {
-    base64: cleanB64,
-    options: { 'data.format': 'text', 'tbpu.parser': umiOcrConfig.parser || 'multi_para' }
-  });
-  if (res?.code === 100) return typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
-  if (res?.code === 101) return '';
-  throw new Error(res?.data || `Umi-OCR 错误码 ${res?.code ?? '未知'}`);
-}
-
-function fileBlobToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || '').replace(/^data:[^;]+;base64,/, ''));
-    reader.onerror = () => reject(new Error('读取图片失败'));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function extractTextViaUmiOcr(fileRecord, onProgress) {
-  if (fileRecord.textContent !== undefined && fileRecord.textContent !== '') return fileRecord.textContent;
-  const mode = umiOcrConfig.mode || 'local';
-
-  if (Capacitor.isNativePlatform() && fileRecord.localPath) {
-    onProgress?.(mode === 'local' ? '⚡ 本机内置 RapidOCR（Umi-OCR 同源引擎）离线识别中...' : `🌐 正在编码并提交至远程 Umi-OCR (${umiOcrConfig.serverUrl})...`);
-    const prep = await NativeTools.extractText({
-      localPath: fileRecord.localPath,
-      mode,
-      maxPages: umiOcrConfig.maxPages || 3
-    });
-    if (!prep?.needsOcr) return prep?.text || '';
-    const imgs = prep.images || [], chunks = [];
-    for (let i = 0; i < imgs.length; i++) {
-      onProgress?.(`🌐 远程 Umi-OCR 正在识别第 ${i + 1}/${imgs.length} 页...`);
-      const part = await callUmiOcrOnBase64(imgs[i]);
-      if (part && part.trim()) chunks.push(part.trim());
-    }
-    return chunks.join('\n\n');
-  }
-
-  if (fileRecord.rawBase64) { onProgress?.('🌐 正在调用远程 Umi-OCR...'); return await callUmiOcrOnBase64(fileRecord.rawBase64); }
-  if (fileRecord.dataUrl && fileRecord.dataUrl.startsWith('data:image')) { onProgress?.('🌐 正在调用远程 Umi-OCR...'); return await callUmiOcrOnBase64(fileRecord.dataUrl); }
-  throw new Error('该文件请在安卓端使用，或在浏览器直接选择图片');
-}
-
-function showUmiOcrErrorModal(errMsg) {
-  const isRemote = umiOcrConfig.mode === 'remote';
+function showOcrErrorModal(errMsg) {
   const box = document.createElement('div');
-  box.innerHTML = `
-    <p class="sub-text" style="color:#dc2626; font-size:13px; margin-bottom:10px;">OCR 识别失败：${errMsg}</p>
-    <div class="sub-text" style="padding:10px; background:var(--card-sub); border-radius:8px; border:1px solid var(--border); margin-bottom:10px;">
-      当前模式：<strong>${isRemote ? `远程 Umi-OCR (${umiOcrConfig.serverUrl})` : '本机内置 RapidOCR 离线引擎'}</strong><br/>
-      ${isRemote ? '手机端不可填 127.0.0.1，请填写电脑局域网 IP，或直接一键切换为本机离线引擎！' : '请检查图片是否清晰，或前往设置尝试远程 Umi-OCR 服务。'}
-    </div>
-    ${isRemote ? '<button class="btn btn-green" id="switchLocalOcrBtn" style="width:100%; margin-bottom:8px;">⚡ 一键切回本机内置离线引擎（免电脑）</button>' : ''}
-    <button class="btn btn-outline" id="openUmiCfgFromErr" style="width:100%;">⚙️ 打开 OCR 引擎设置</button>
-  `;
-  box.querySelector('#switchLocalOcrBtn')?.addEventListener('click', () => {
-    umiOcrConfig.mode = 'local';
-    localStorage.setItem('umi_ocr_cfg_v2', JSON.stringify(umiOcrConfig));
-    modal.classList.remove('open');
-    showToast('✅ 已切换为本机内置离线引擎，请重新点击识别！', 2600);
-  });
-  box.querySelector('#openUmiCfgFromErr').onclick = () => { modal.classList.remove('open'); applyAppearance(); settingsModal.classList.add('open'); };
+  box.innerHTML = `<p class="sub-text" style="color:#dc2626; font-size:13px; margin-bottom:10px;">OCR 识别失败：${errMsg}</p><div class="sub-text" style="padding:10px; background:var(--card-sub); border-radius:8px; border:1px solid var(--border); margin-bottom:10px;">如免费公共 Key 偶尔繁忙，可在设置里免费领取个人专属 Key（2.5万次/月），或切换 Engine 3 / 本机离线模式。</div><button class="btn" id="openOcrCfgErr" style="width:100%;">⚙️ 打开 OCR 设置</button>`;
+  box.querySelector('#openOcrCfgErr').onclick = () => { closeModal(); applyAppearance(); settingsModal.classList.add('open'); };
   openModal('🧠 OCR 识别提示', box);
 }
 
-const PERIOD_MAP = { 1:['08:00','08:45'], 2:['08:55','09:40'], 3:['10:00','10:45'], 4:['10:55','11:40'], 5:['14:00','14:45'], 6:['14:55','15:40'], 7:['16:00','16:45'], 8:['16:55','17:40'], 9:['19:00','19:45'], 10:['19:55','20:40'] };
-function parseSmartText(rawText) {
-  const lines = (rawText || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  const parsedCourses = [], parsedEvents = [];
-  const dayRegex = /(?:星期|周)([一二三四五六日天1-7])/, dayMap = { '一':1,'1':1,'二':2,'2':2,'三':3,'3':3,'四':4,'4':4,'五':5,'5':5,'六':6,'6':6,'日':0,'天':0,'7':0 };
-  const timeRangeRegex = /(\d{1,2})[:：](\d{2})\s*[-~至到]\s*(\d{1,2})[:：](\d{2})/, singleTimeRegex = /(\d{1,2})[:：](\d{2})/;
-  const periodRegex = /第?\s*(\d{1,2})\s*[-~至到]?\s*(\d{1,2})?\s*节/, dateRegex = /(?:(\d{4})[-/.年])?\s*(\d{1,2})[-/.月](\d{1,2})日?/, roomRegex = /([教实图综A-Za-z楼栋室]*\s*[A-Za-z]?-?\d{3,4}[室]?)/;
-  const yearNow = new Date().getFullYear();
-  lines.forEach(line => {
-    const dm = line.match(dateRegex);
-    if (dm && !line.includes('周')) {
-      const y = dm[1] ? Number(dm[1]) : yearNow, mo = String(Number(dm[2])).padStart(2, '0'), da = String(Number(dm[3])).padStart(2, '0');
-      const tm = line.match(singleTimeRegex), hh = tm ? String(Number(tm[1])).padStart(2, '0') : '09', mm = tm ? tm[2] : '00', rm = line.match(roomRegex);
-      const title = line.replace(dateRegex, '').replace(timeRangeRegex, '').replace(singleTimeRegex, '').replace(/[,，|]/g, ' ').trim() || '识别日程';
-      parsedEvents.push({ type: /考|测验|答辩/.test(line) ? '考试' : (/闹钟|起床/.test(line) ? '闹钟' : '日程'), name: title.slice(0, 28), datetime: `${y}-${mo}-${da}T${hh}:${mm}`, room: rm ? rm[1] : '', note: 'Umi-OCR 导入' });
-      return;
-    }
-    const dw = line.match(dayRegex), tr = line.match(timeRangeRegex), pr = line.match(periodRegex);
-    if (dw || tr || pr) {
-      const day = dw ? (dayMap[dw[1]] ?? 1) : 1; let start = '08:00', end = '09:40';
-      if (tr) { start = `${String(Number(tr[1])).padStart(2, '0')}:${tr[2]}`; end = `${String(Number(tr[3])).padStart(2, '0')}:${tr[4]}`; }
-      else if (pr) { const p1 = Number(pr[1]), p2 = Number(pr[2] || pr[1]); start = PERIOD_MAP[p1]?.[0] || '08:00'; end = PERIOD_MAP[p2]?.[1] || '09:40'; }
-      const rm = line.match(roomRegex);
-      const cname = line.replace(dayRegex, '').replace(timeRangeRegex, '').replace(periodRegex, '').replace(singleTimeRegex, '').replace(roomRegex, '').replace(/[,，|]/g, ' ').trim();
-      if (cname.length >= 1) parsedCourses.push({ name: cname.slice(0, 22), day, start, end, room: rm ? rm[1] : '' });
-    }
-  });
-  return { parsedCourses, parsedEvents };
-}
-
 async function runSmartRecognizeFromLocalFile(fileRecord) {
-  const tip = umiOcrConfig.mode === 'local' ? '⚡ 本机内置 RapidOCR 离线识别中（首次加载约 1~2 秒）...' : `🌐 正在请求远程 Umi-OCR (${umiOcrConfig.serverUrl})...`;
-  openModal('🧠 Umi-OCR 识别中...', `<div id="umiProgressTip" style="text-align:center; padding:24px;">${tip}</div>`);
+  openModal('🧠 网页 OCR 识别中...', '<div id="ocrProgTip" style="text-align:center; padding:24px;">🌐 正在识别图片/文档中的课表与日程...</div>');
   try {
-    const text = await extractTextViaUmiOcr(fileRecord, (msg) => { const el = document.getElementById('umiProgressTip'); if (el) el.textContent = msg; });
-    showSmartImportReviewModal(text);
-  } catch (e) { showUmiOcrErrorModal(e.message); }
-}
-
-function showSmartImportReviewModal(rawText) {
-  const { parsedCourses, parsedEvents } = parseSmartText(rawText), box = document.createElement('div');
-  box.innerHTML = `<div style="font-size:12px; font-weight:600; margin-bottom:4px;">📄 提取到的原文（可微调）：</div><textarea id="ocrRawEdit" style="min-height:95px; font-size:12px;">${(rawText || '').replace(/</g, '&lt;')}</textarea><button class="btn btn-sm btn-outline" id="reparseBtn" style="margin:6px 0 10px;">🔄 重新解析</button><div id="parsedPreviewArea"></div>`;
-  const renderPreview = (cList, eList) => {
-    const area = box.querySelector('#parsedPreviewArea');
-    if (!cList.length && !eList.length) { area.innerHTML = `<div class="sub-text" style="color:#b45309; padding:8px; background:#fef3c7; border-radius:8px;">示例：<br/><code>高等数学 周一 08:00-09:40 教A201</code><br/><code>英语考试 2026-12-20 09:00 教B305</code></div>`; return; }
-    let html = '';
-    if (cList.length) {
-      html += `<div style="font-weight:600; font-size:13px; margin:6px 0;">📅 识别到 ${cList.length} 节课：</div>`;
-      cList.forEach((c, i) => { html += `<label style="display:flex; gap:6px; align-items:center; padding:5px 0; font-size:12px; border-bottom:1px solid var(--border);"><input type="checkbox" class="chk-course" data-idx="${i}" checked style="width:auto;" /><span><strong>${c.name}</strong> · ${DAYS_LABEL[c.day]} ${c.start}-${c.end} ${c.room}</span></label>`; });
-    }
-    if (eList.length) {
-      html += `<div style="font-weight:600; font-size:13px; margin:10px 0 6px;">📝 识别到 ${eList.length} 条日程：</div>`;
-      eList.forEach((ev, i) => { html += `<label style="display:flex; gap:6px; align-items:center; padding:5px 0; font-size:12px; border-bottom:1px solid var(--border);"><input type="checkbox" class="chk-event" data-idx="${i}" checked style="width:auto;" /><span><span class="badge">${ev.type}</span><strong>${ev.name}</strong> · ${ev.datetime.replace('T', ' ')}</span></label>`; });
-    }
-    html += `<button class="btn" id="doSmartImportBtn" style="width:100%; margin-top:12px;">✅ 一键导入并设提醒</button>`;
-    area.innerHTML = html;
-    area.querySelector('#doSmartImportBtn').onclick = async () => {
-      let cc = 0, ec = 0;
-      for (const chk of area.querySelectorAll('.chk-course:checked')) { await addCourseItem({ ...cList[Number(chk.dataset.idx)], advance: 15, mode: 'alarm' }); cc++; }
-      for (const chk of area.querySelectorAll('.chk-event:checked')) { await addExamOrScheduleItem({ ...eList[Number(chk.dataset.idx)], advance: 30, mode: 'alarm' }); ec++; }
-      modal.classList.remove('open'); showToast(`✅ 导入完成：${cc} 节课、${ec} 条日程`);
-    };
-  };
-  renderPreview(parsedCourses, parsedEvents);
-  box.querySelector('#reparseBtn').onclick = () => { const r = parseSmartText(box.querySelector('#ocrRawEdit').value); renderPreview(r.parsedCourses, r.parsedEvents); };
-  openModal('🧠 Umi-OCR 智能识别确认', box);
+    const text = await extractTextWithOcr(fileRecord, {
+      NativeTools, isNative: Capacitor.isNativePlatform(),
+      onProgress: (m) => { const el = document.getElementById('ocrProgTip'); if (el) el.textContent = m; }
+    });
+    showSmartImportReviewModal(text, 'OCR 识别结果批量导入');
+  } catch (e) { showOcrErrorModal(e.message); }
 }
 
 let pendingWebOcrCallback = null;
@@ -788,100 +632,9 @@ async function pickAndSmartRecognize() {
     else { pendingWebOcrCallback = (rec) => runSmartRecognizeFromLocalFile(rec); document.getElementById('fallbackOcrFileInput').click(); }
   } catch (e) { if (!String(e.message).includes('取消')) alert('选择失败：' + e.message); }
 }
-document.getElementById('smartImportCourseBtn').addEventListener('click', pickAndSmartRecognize);
-document.getElementById('smartImportExamBtn').addEventListener('click', pickAndSmartRecognize);
 document.getElementById('quickConfigUmiBtn').addEventListener('click', () => { applyAppearance(); settingsModal.classList.add('open'); });
 
-// ==================== 5. 课表与考试日程 ====================
-let courses = JSON.parse(localStorage.getItem('courses_v1') || '[]');
-let selectedDay = new Date().getDay();
-let exams = JSON.parse(localStorage.getItem('exams_v1') || '[]');
-
-function calcCourseAlarmTime(item) {
-  const [h, m] = (item.start || '08:00').split(':').map(Number);
-  let totalMin = h * 60 + m - Number(item.advance || 15), dayIndex = Number(item.day);
-  if (totalMin < 0) { totalMin += 1440; dayIndex = (dayIndex + 6) % 7; }
-  return { hour: Math.floor(totalMin / 60), minute: totalMin % 60, capWeekday: dayIndex + 1 };
-}
-function getNextWeekdayDate(jsDay, timeStr) {
-  const [h, m] = (timeStr || '08:00').split(':').map(Number), now = new Date(), d = new Date(now);
-  d.setDate(now.getDate() + ((jsDay - now.getDay() + 7) % 7)); d.setHours(h, m, 0, 0);
-  if (d.getTime() < now.getTime()) d.setDate(d.getDate() + 7);
-  return d;
-}
-function saveCourses() { localStorage.setItem('courses_v1', JSON.stringify(courses)); renderCourses(); }
-function saveExams() { localStorage.setItem('exams_v1', JSON.stringify(exams)); renderExams(); }
-
-function renderDayTabs() {
-  const wrap = document.getElementById('dayTabs'); wrap.innerHTML = '';
-  [1, 2, 3, 4, 5, 6, 0].forEach(d => {
-    const b = document.createElement('button');
-    b.className = 'day-pill' + (d === selectedDay ? ' active' : '');
-    b.textContent = DAYS_LABEL[d];
-    b.onclick = () => { selectedDay = d; renderDayTabs(); renderCourses(); };
-    wrap.appendChild(b);
-  });
-}
-function renderCourses() {
-  const list = document.getElementById('courseList');
-  const filtered = courses.filter(c => Number(c.day) === Number(selectedDay)).sort((a, b) => a.start.localeCompare(b.start));
-  if (!filtered.length) { list.innerHTML = '<div class="sub-text" style="text-align:center; padding:16px;">今天暂无排课 ✨</div>'; return; }
-  list.innerHTML = '';
-  filtered.forEach(c => {
-    const t = calcCourseAlarmTime(c), div = document.createElement('div'); div.className = 'item-row';
-    div.innerHTML = `<div style="flex:1;"><div><strong>${c.name}</strong> <span class="badge badge-alarm">提前${c.advance}分</span></div><div class="sub-text">🕒 ${c.start}-${c.end} ｜ 📍 ${c.room || '未填教室'}</div></div><div style="display:flex; flex-direction:column; gap:4px;"><button class="btn btn-sm btn-warn sys-alarm-btn">⏰系统闹钟</button><button class="btn btn-sm btn-green sys-cal-btn">📅系统日历</button><button class="btn btn-sm btn-danger del-btn">删除</button></div>`;
-    div.querySelector('.sys-alarm-btn').onclick = () => syncToDeviceAlarm({ hour: t.hour, minute: t.minute, message: `上课：${c.name} (${c.room || ''})`, days: [t.capWeekday] });
-    div.querySelector('.sys-cal-btn').onclick = () => { const sD = getNextWeekdayDate(Number(c.day), c.start), eD = getNextWeekdayDate(Number(c.day), c.end); syncToDeviceCalendar({ title: `上课：${c.name}`, location: c.room || '', description: `每周${DAYS_LABEL[c.day]}`, startTimeMs: sD.getTime(), endTimeMs: Math.max(eD.getTime(), sD.getTime() + 3600000), rrule: `FREQ=WEEKLY;BYDAY=${RRULE_DAYS[Number(c.day)]}` }); };
-    div.querySelector('.del-btn').onclick = async () => { await cancelReminder(c.notifId); courses = courses.filter(x => x.id !== c.id); saveCourses(); };
-    list.appendChild(div);
-  });
-}
-async function addCourseItem(item) {
-  const t = calcCourseAlarmTime(item), notifId = makeSafeNotifId();
-  await scheduleAppReminder({ id: notifId, title: `即将上课：${item.name}`, body: `${item.start}-${item.end} ${item.room || ''}`, weeklyWeekday: t.capWeekday, hour: t.hour, minute: t.minute, mode: item.mode || 'alarm' });
-  courses.push({ ...item, id: Date.now() + Math.random(), notifId }); saveCourses(); return t;
-}
-document.getElementById('addCourseBtn').addEventListener('click', async () => {
-  const name = document.getElementById('cName').value.trim(); if (!name) return alert('请输入课程名称');
-  const item = { name, day: Number(document.getElementById('cDay').value), room: document.getElementById('cRoom').value.trim(), start: document.getElementById('cStart').value, end: document.getElementById('cEnd').value, advance: Number(document.getElementById('cAdvance').value), mode: document.getElementById('cMode').value };
-  const t = await addCourseItem(item); document.getElementById('cName').value = ''; document.getElementById('cRoom').value = '';
-  if (item.mode === 'sys_alarm') await syncToDeviceAlarm({ hour: t.hour, minute: t.minute, message: `上课：${item.name}`, days: [t.capWeekday] });
-  else if (item.mode === 'sys_cal') { const sD = getNextWeekdayDate(item.day, item.start), eD = getNextWeekdayDate(item.day, item.end); await syncToDeviceCalendar({ title: `上课：${item.name}`, location: item.room, description: `每周${DAYS_LABEL[item.day]}`, startTimeMs: sD.getTime(), endTimeMs: Math.max(eD.getTime(), sD.getTime() + 3600000), rrule: `FREQ=WEEKLY;BYDAY=${RRULE_DAYS[item.day]}` }); }
-  else showToast('✅ 课程与提醒已保存');
-});
-document.getElementById('openBatchCourseBtn').addEventListener('click', () => showSmartImportReviewModal('高等数学 周一 08:00-09:40 教A101\n大学英语 周三 10:00-11:40 教B205'));
-
-async function addExamOrScheduleItem(item) {
-  const targetMs = new Date(item.datetime).getTime() - Number(item.advance || 0) * 60000, notifId = makeSafeNotifId();
-  if (targetMs > Date.now()) await scheduleAppReminder({ id: notifId, title: `${item.type || '日程'}：${item.name}`, body: `${item.datetime.replace('T', ' ')} ${item.room || ''}`, atDate: new Date(targetMs), mode: item.mode || 'alarm' });
-  exams.push({ ...item, type: item.type || '考试', id: Date.now() + Math.random(), notifId }); saveExams(); return targetMs;
-}
-function renderExams() {
-  const list = document.getElementById('examList'), sorted = [...exams].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
-  if (!sorted.length) { list.innerHTML = '<div class="sub-text" style="text-align:center; padding:16px;">暂无日程 🎯</div>'; return; }
-  list.innerHTML = ''; const now = Date.now();
-  sorted.forEach(ex => {
-    const diffMs = new Date(ex.datetime).getTime() - now; let cd = '已过时', uc = '';
-    if (diffMs > 0) { const d = Math.floor(diffMs / 86400000), h = Math.floor((diffMs % 86400000) / 3600000), m = Math.floor((diffMs % 3600000) / 60000); cd = d > 0 ? `剩 ${d}天${h}时` : (h > 0 ? `剩 ${h}时${m}分` : `剩 ${m}分钟`); if (d <= 3) uc = 'badge-urgent'; }
-    const div = document.createElement('div'); div.className = 'item-row';
-    div.innerHTML = `<div style="flex:1;"><div><span class="badge">${ex.type || '考试'}</span><strong>${ex.name}</strong> <span class="badge ${uc}">${cd}</span></div><div class="sub-text">📅 ${ex.datetime.replace('T', ' ')} ｜ 📍 ${ex.room || '无'}</div>${ex.note ? `<div class="sub-text">📌 ${ex.note}</div>` : ''}</div><div style="display:flex; flex-direction:column; gap:4px;"><button class="btn btn-sm btn-warn sys-alarm-btn">⏰系统闹钟</button><button class="btn btn-sm btn-green sys-cal-btn">📅系统日历</button><button class="btn btn-sm btn-danger del-btn">删除</button></div>`;
-    div.querySelector('.sys-alarm-btn').onclick = () => { const t = new Date(new Date(ex.datetime).getTime() - Number(ex.advance || 0) * 60000); syncToDeviceAlarm({ hour: t.getHours(), minute: t.getMinutes(), message: `${ex.type}：${ex.name}` }); };
-    div.querySelector('.sys-cal-btn').onclick = () => { const st = new Date(ex.datetime).getTime(); syncToDeviceCalendar({ title: `[${ex.type}] ${ex.name}`, location: ex.room || '', description: ex.note || '', startTimeMs: st, endTimeMs: st + 7200000 }); };
-    div.querySelector('.del-btn').onclick = async () => { await cancelReminder(ex.notifId); exams = exams.filter(x => x.id !== ex.id); saveExams(); };
-    list.appendChild(div);
-  });
-}
-document.getElementById('addExamBtn').addEventListener('click', async () => {
-  const name = document.getElementById('eName').value.trim(), datetime = document.getElementById('eDateTime').value;
-  if (!name || !datetime) return alert('请填写标题和日期时间');
-  const item = { type: document.getElementById('eType').value, name, datetime, room: document.getElementById('eRoom').value.trim(), note: document.getElementById('eNote').value.trim(), advance: Number(document.getElementById('eAdvance').value), mode: document.getElementById('eMode').value };
-  const targetMs = await addExamOrScheduleItem(item); document.getElementById('eName').value = ''; document.getElementById('eRoom').value = ''; document.getElementById('eNote').value = '';
-  if (item.mode === 'sys_alarm') { const t = new Date(targetMs); await syncToDeviceAlarm({ hour: t.getHours(), minute: t.getMinutes(), message: `${item.type}：${item.name}` }); }
-  else if (item.mode === 'sys_cal') { const st = new Date(datetime).getTime(); await syncToDeviceCalendar({ title: `[${item.type}] ${item.name}`, location: item.room, description: item.note, startTimeMs: st, endTimeMs: st + 7200000 }); }
-  else showToast('✅ 日程与提醒已保存');
-});
-
-// ==================== 6. 图文资料库 ====================
+// ==================== 5. 图文资料库 ====================
 let localFiles = JSON.parse(localStorage.getItem('files_meta_v3') || '[]');
 function saveFilesMeta() { localStorage.setItem('files_meta_v3', JSON.stringify(localFiles)); renderFiles(); }
 function renderFiles() {
@@ -891,11 +644,11 @@ function renderFiles() {
   items.forEach(f => {
     const srcUrl = f.localPath ? Capacitor.convertFileSrc(f.localPath) : (f.dataUrl || ''), div = document.createElement('div'); div.className = 'item-row';
     const leftHtml = f.category === 'image' && srcUrl ? `<img src="${srcUrl}" class="thumb" />` : `<div style="font-size:26px; width:46px; text-align:center;">${f.category === 'text' ? '📝' : '📄'}</div>`;
-    div.innerHTML = `<div style="display:flex; gap:10px; align-items:center; flex:1; cursor:pointer;" class="open-trigger">${leftHtml}<div><div style="font-weight:500; word-break:break-all;">${f.name}</div><div class="sub-text"><span class="badge badge-fmt">${f.format || 'FILE'}</span> ${(f.size / 1024).toFixed(1)} KB</div></div></div><div style="display:flex; flex-direction:column; gap:4px;"><button class="btn btn-sm btn-green ocr-btn">🧠 Umi-OCR</button><button class="btn btn-sm btn-danger del-btn">删除</button></div>`;
+    div.innerHTML = `<div style="display:flex; gap:10px; align-items:center; flex:1; cursor:pointer;" class="open-trigger">${leftHtml}<div><div style="font-weight:500; word-break:break-all;">${f.name}</div><div class="sub-text"><span class="badge badge-fmt">${f.format || 'FILE'}</span> ${(f.size / 1024).toFixed(1)} KB</div></div></div><div style="display:flex; flex-direction:column; gap:4px;"><button class="btn btn-sm btn-green ocr-btn">🧠 OCR识字</button><button class="btn btn-sm btn-danger del-btn">删除</button></div>`;
     div.querySelector('.open-trigger').onclick = () => {
-      if (f.category === 'image') { openModal(f.name, `<img src="${srcUrl}" style="width:100%; border-radius:8px; margin-bottom:10px;" /><button class="btn btn-green" style="width:100%;" id="mOcr">🧠 Umi-OCR 识别图中课表/日程</button>`); document.getElementById('mOcr').onclick = () => runSmartRecognizeFromLocalFile(f); }
+      if (f.category === 'image') { openModal(f.name, `<img src="${srcUrl}" style="width:100%; border-radius:8px; margin-bottom:10px;" /><button class="btn btn-green" style="width:100%;" id="mOcr">🧠 OCR 识别图中课表/日程</button>`); document.getElementById('mOcr').onclick = () => runSmartRecognizeFromLocalFile(f); }
       else if (f.textContent !== undefined) openModal(f.name, `<pre style="white-space:pre-wrap; font-size:13px;">${f.textContent.replace(/</g, '&lt;')}</pre>`);
-      else { openModal(f.name, `<p class="sub-text">格式：${f.format} ｜ ${(f.size / 1024).toFixed(1)} KB</p><button class="btn btn-green" style="width:100%;" id="mDocOcr">🧠 Umi-OCR / 文档提取并解析</button>`); document.getElementById('mDocOcr').onclick = () => runSmartRecognizeFromLocalFile(f); }
+      else { openModal(f.name, `<p class="sub-text">格式：${f.format} ｜ ${(f.size / 1024).toFixed(1)} KB</p><button class="btn btn-green" style="width:100%;" id="mDocOcr">🧠 提取文字并解析</button>`); document.getElementById('mDocOcr').onclick = () => runSmartRecognizeFromLocalFile(f); }
     };
     div.querySelector('.ocr-btn').onclick = () => runSmartRecognizeFromLocalFile(f);
     div.querySelector('.del-btn').onclick = async () => { if (Capacitor.isNativePlatform() && f.localPath) { try { await NativeTools.deleteLocalFile({ localPath: f.localPath }); } catch {} } localFiles = localFiles.filter(x => x.id !== f.id); saveFilesMeta(); };
@@ -930,13 +683,13 @@ document.getElementById('openNoteModalBtn').addEventListener('click', () => {
   box.querySelector('#saveNoteBtn').onclick = () => {
     const title = box.querySelector('#noteTitle').value.trim() || '未命名笔记', body = box.querySelector('#noteBody').value;
     localFiles.unshift({ id: Date.now(), name: title + '.txt', format: 'TXT', size: new Blob([body]).size, category: 'text', textContent: body, createdAt: Date.now() });
-    modal.classList.remove('open'); saveFilesMeta();
+    closeModal(); saveFilesMeta();
   };
   openModal('新建文字笔记', box);
 });
 document.getElementById('fileFilter').addEventListener('change', renderFiles);
 
-// ==================== 7. 内置 MusicFree 插件引擎 + 歌词同步 + 零占用播放器 + 硬件EQ + 白噪音 ====================
+// ==================== 6. MusicFree 插件引擎 + 同步歌词 + 零占用播放器 + 硬件EQ + 白噪音 ====================
 const MF_OFFICIAL_SUB_URL = 'https://raw.gitcode.com/maotoumao/MusicFreePlugins/raw/master/plugins.json';
 
 const BufferShim = {
@@ -962,11 +715,8 @@ function createCheerioShim() {
   function wrapNodes(nodes) {
     const arr = Array.from(nodes || []).filter(Boolean);
     const obj = {
-      length: arr.length,
-      get(i) { return i === undefined ? arr : arr[i]; },
-      eq(i) { return wrapNodes(arr[i] ? [arr[i]] : []); },
-      first() { return wrapNodes(arr.slice(0, 1)); },
-      last() { return wrapNodes(arr.slice(-1)); },
+      length: arr.length, get(i) { return i === undefined ? arr : arr[i]; }, eq(i) { return wrapNodes(arr[i] ? [arr[i]] : []); },
+      first() { return wrapNodes(arr.slice(0, 1)); }, last() { return wrapNodes(arr.slice(-1)); },
       find(sel) { const res = []; arr.forEach(n => { if (n.querySelectorAll) res.push(...n.querySelectorAll(sel)); }); return wrapNodes(res); },
       children(sel) { const res = []; arr.forEach(n => Array.from(n.children || []).forEach(c => { if (!sel || c.matches(sel)) res.push(c); })); return wrapNodes(res); },
       parent() { return wrapNodes(arr.map(n => n.parentElement).filter(Boolean)); },
@@ -979,8 +729,7 @@ function createCheerioShim() {
       attr(name) { return arr[0]?.getAttribute?.(name) ?? undefined; },
       data(name) { return arr[0]?.getAttribute?.('data-' + name) ?? undefined; }
     };
-    arr.forEach((n, i) => { obj[i] = n; });
-    return obj;
+    arr.forEach((n, i) => { obj[i] = n; }); return obj;
   }
   return {
     load(html) {
@@ -991,9 +740,7 @@ function createCheerioShim() {
         const root = ctx ? (ctx[0] || ctx) : doc;
         try { return wrapNodes(root.querySelectorAll ? root.querySelectorAll(sel) : []); } catch { return wrapNodes([]); }
       };
-      $.html = () => doc.documentElement?.outerHTML || '';
-      $.text = () => doc.body?.textContent || '';
-      return $;
+      $.html = () => doc.documentElement?.outerHTML || ''; $.text = () => doc.body?.textContent || ''; return $;
     }
   };
 }
@@ -1008,14 +755,10 @@ function createAxiosShim(defaults = {}) {
     if (cfg.params && typeof cfg.params === 'object') { const q = qs.stringify(cfg.params); if (q) url += (url.includes('?') ? '&' : '?') + q; }
     const headers = { ...(defaults.headers || {}), ...(cfg.headers || {}) };
     if (!headers['User-Agent'] && !headers['user-agent']) headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36';
-
     if (Capacitor.isNativePlatform()) {
       const res = await CapacitorHttp.request({ url, method, headers, data: cfg.data, responseType: cfg.responseType === 'text' ? 'text' : undefined });
       let data = res.data;
-      if (typeof data === 'string' && cfg.responseType !== 'text') {
-        const tr = data.trim();
-        if ((tr.startsWith('{') && tr.endsWith('}')) || (tr.startsWith('[') && tr.endsWith(']'))) { try { data = JSON.parse(tr); } catch {} }
-      }
+      if (typeof data === 'string' && cfg.responseType !== 'text') { const tr = data.trim(); if ((tr.startsWith('{') && tr.endsWith('}')) || (tr.startsWith('[') && tr.endsWith(']'))) { try { data = JSON.parse(tr); } catch {} } }
       return { data, status: res.status, headers: res.headers || {}, config: cfg };
     }
     const fetchOpts = { method, headers };
@@ -1025,34 +768,18 @@ function createAxiosShim(defaults = {}) {
     const respHeaders = {}; resp.headers.forEach((v, k) => { respHeaders[k] = v; });
     return { data, status: resp.status, headers: respHeaders, config: cfg };
   }
-  request.request = request;
-  request.get = (url, cfg) => request({ ...(cfg || {}), url, method: 'GET' });
-  request.delete = (url, cfg) => request({ ...(cfg || {}), url, method: 'DELETE' });
-  request.head = (url, cfg) => request({ ...(cfg || {}), url, method: 'HEAD' });
-  request.post = (url, data, cfg) => request({ ...(cfg || {}), url, data, method: 'POST' });
-  request.put = (url, data, cfg) => request({ ...(cfg || {}), url, data, method: 'PUT' });
-  request.create = (sub) => createAxiosShim({ ...defaults, ...(sub || {}) });
-  request.defaults = defaults;
-  request.default = request;
+  request.request = request; request.get = (u, c) => request({ ...(c || {}), url: u, method: 'GET' });
+  request.delete = (u, c) => request({ ...(c || {}), url: u, method: 'DELETE' }); request.head = (u, c) => request({ ...(c || {}), url: u, method: 'HEAD' });
+  request.post = (u, d, c) => request({ ...(c || {}), url: u, data: d, method: 'POST' }); request.put = (u, d, c) => request({ ...(c || {}), url: u, data: d, method: 'PUT' });
+  request.create = (sub) => createAxiosShim({ ...defaults, ...(sub || {}) }); request.defaults = defaults; request.default = request;
   return request;
 }
 
-const mfAxios = createAxiosShim();
-const mfCheerio = createCheerioShim();
-
+const mfAxios = createAxiosShim(), mfCheerio = createCheerioShim();
 const BUILTIN_MF_PLUGINS = [
-  {
-    id: 'builtin_netease_pub', enabled: true, builtin: true, srcUrl: '',
-    code: `const axios=require("axios");module.exports={platform:"网易公开(内置)",version:"1.0.0",author:"StudyHub",supportedSearchType:["music"],async search(query,page,type){if(type!=="music")return{isEnd:true,data:[]};const res=await axios.get("https://music.163.com/api/search/get/web",{params:{s:query,type:1,offset:(page-1)*12,limit:12},headers:{Referer:"https://music.163.com/"}});const songs=(res.data&&res.data.result&&res.data.result.songs)||[];return{isEnd:songs.length<12,data:songs.map(s=>({id:String(s.id),title:s.name,artist:(s.artists||[]).map(a=>a.name).join("/")||"未知歌手",album:(s.album&&s.album.name)||"",artwork:(s.album&&s.album.picUrl)||"",duration:Math.floor((s.duration||0)/1000)}))};},async getMediaSource(item){return{url:"https://music.163.com/song/media/outer/url?id="+item.id+".mp3",headers:{Referer:"https://music.163.com/"}};},async getLyric(item){try{const res=await axios.get("https://music.163.com/api/song/lyric",{params:{id:item.id,lv:1,tv:-1},headers:{Referer:"https://music.163.com/"}});return{rawLrc:(res.data&&res.data.lrc&&res.data.lrc.lyric)||""};}catch(e){return{rawLrc:""};}}};`
-  },
-  {
-    id: 'builtin_apple_hk', enabled: true, builtin: true, srcUrl: '',
-    code: `const axios=require("axios");module.exports={platform:"Apple试听(内置)",version:"1.0.0",author:"StudyHub",supportedSearchType:["music"],async search(query,page,type){if(type!=="music")return{isEnd:true,data:[]};const res=await axios.get("https://itunes.apple.com/search",{params:{term:query,entity:"song",limit:10,country:"HK"}});const rows=(res.data&&res.data.results)||[];return{isEnd:true,data:rows.filter(r=>r.previewUrl).map(r=>({id:String(r.trackId),title:r.trackName,artist:r.artistName||"歌手",album:r.collectionName||"",artwork:r.artworkUrl100||"",url:r.previewUrl}))};},async getMediaSource(item){return{url:item.url};}};`
-  },
-  {
-    id: 'builtin_audius_free', enabled: true, builtin: true, srcUrl: '',
-    code: `const axios=require("axios");module.exports={platform:"Audius完整(内置)",version:"1.0.0",author:"StudyHub",supportedSearchType:["music"],async search(query,page,type){if(type!=="music")return{isEnd:true,data:[]};const res=await axios.get("https://discoveryprovider.audius.co/v1/tracks/search",{params:{query:query,app_name:"studyhub"}});const rows=(res.data&&res.data.data)||[];return{isEnd:true,data:rows.slice(0,8).map(t=>({id:String(t.id),title:t.title,artist:(t.user&&t.user.name)||"Audius",artwork:(t.artwork&&t.artwork["150x150"])||""}))};},async getMediaSource(item){return{url:"https://discoveryprovider.audius.co/v1/tracks/"+item.id+"/stream?app_name=studyhub"};}};`
-  }
+  { id: 'builtin_netease_pub', enabled: true, builtin: true, srcUrl: '', code: `const axios=require("axios");module.exports={platform:"网易公开(内置)",version:"1.0.0",author:"StudyHub",supportedSearchType:["music"],async search(query,page,type){if(type!=="music")return{isEnd:true,data:[]};const res=await axios.get("https://music.163.com/api/search/get/web",{params:{s:query,type:1,offset:(page-1)*12,limit:12},headers:{Referer:"https://music.163.com/"}});const songs=(res.data&&res.data.result&&res.data.result.songs)||[];return{isEnd:songs.length<12,data:songs.map(s=>({id:String(s.id),title:s.name,artist:(s.artists||[]).map(a=>a.name).join("/")||"未知歌手",album:(s.album&&s.album.name)||"",artwork:(s.album&&s.album.picUrl)||"",duration:Math.floor((s.duration||0)/1000)}))};},async getMediaSource(item){return{url:"https://music.163.com/song/media/outer/url?id="+item.id+".mp3",headers:{Referer:"https://music.163.com/"}};},async getLyric(item){try{const res=await axios.get("https://music.163.com/api/song/lyric",{params:{id:item.id,lv:1,tv:-1},headers:{Referer:"https://music.163.com/"}});return{rawLrc:(res.data&&res.data.lrc&&res.data.lrc.lyric)||""};}catch(e){return{rawLrc:""};}}};` },
+  { id: 'builtin_apple_hk', enabled: true, builtin: true, srcUrl: '', code: `const axios=require("axios");module.exports={platform:"Apple试听(内置)",version:"1.0.0",author:"StudyHub",supportedSearchType:["music"],async search(query,page,type){if(type!=="music")return{isEnd:true,data:[]};const res=await axios.get("https://itunes.apple.com/search",{params:{term:query,entity:"song",limit:10,country:"HK"}});const rows=(res.data&&res.data.results)||[];return{isEnd:true,data:rows.filter(r=>r.previewUrl).map(r=>({id:String(r.trackId),title:r.trackName,artist:r.artistName||"歌手",album:r.collectionName||"",artwork:r.artworkUrl100||"",url:r.previewUrl}))};},async getMediaSource(item){return{url:item.url};}};` },
+  { id: 'builtin_audius_free', enabled: true, builtin: true, srcUrl: '', code: `const axios=require("axios");module.exports={platform:"Audius完整(内置)",version:"1.0.0",author:"StudyHub",supportedSearchType:["music"],async search(query,page,type){if(type!=="music")return{isEnd:true,data:[]};const res=await axios.get("https://discoveryprovider.audius.co/v1/tracks/search",{params:{query:query,app_name:"studyhub"}});const rows=(res.data&&res.data.data)||[];return{isEnd:true,data:rows.slice(0,8).map(t=>({id:String(t.id),title:t.title,artist:(t.user&&t.user.name)||"Audius",artwork:(t.artwork&&t.artwork["150x150"])||""}))};},async getMediaSource(item){return{url:"https://discoveryprovider.audius.co/v1/tracks/"+item.id+"/stream?app_name=studyhub"};}};` }
 ];
 
 let mfStoredPlugins = JSON.parse(localStorage.getItem('mf_plugins_v1') || 'null');
@@ -1069,39 +796,23 @@ function compileMfPlugin(record) {
   if (mfCompiledCache.has(cacheKey)) return mfCompiledCache.get(cacheKey);
   const mod = { exports: {} }, pluginVars = mfUserVars[record.id] || {};
   const envObj = { getUserVariables: () => ({ ...pluginVars }), os: Capacitor.isNativePlatform() ? 'android' : 'web', appVersion: '2.0.0' };
-  const customRequire = (name) => {
-    if (name === 'axios') return mfAxios;
-    if (name === 'cheerio') return mfCheerio;
-    if (name === 'crypto-js') return CryptoJS;
-    if (name === 'dayjs') return dayjs;
-    if (name === 'he') return he;
-    if (name === 'qs') return qs;
-    if (name === 'buffer') return { Buffer: BufferShim };
-    return {};
-  };
+  const customRequire = (name) => ({ axios: mfAxios, cheerio: mfCheerio, 'crypto-js': CryptoJS, dayjs, he, qs, buffer: { Buffer: BufferShim } }[name] || {});
   new Function('require', 'module', 'exports', 'env', 'Buffer', 'console', record.code)(customRequire, mod, mod.exports, envObj, BufferShim, console);
   const inst = mod.exports?.default || mod.exports;
-  if (!inst || !inst.platform) throw new Error('非标准 MusicFree 插件（缺少 platform）');
-  mfCompiledCache.set(cacheKey, inst);
-  return inst;
+  if (!inst || !inst.platform) throw new Error('非标准 MusicFree 插件');
+  mfCompiledCache.set(cacheKey, inst); return inst;
 }
 function getAllLoadedMfPlugins() {
   return mfStoredPlugins.map(rec => { try { return { rec, inst: compileMfPlugin(rec) }; } catch (e) { return { rec, inst: null, error: e.message }; } });
 }
-function saveMfPlugins() {
-  localStorage.setItem('mf_plugins_v1', JSON.stringify(mfStoredPlugins));
-  mfCompiledCache.clear();
-  renderMfSourceTabs();
-}
+function saveMfPlugins() { localStorage.setItem('mf_plugins_v1', JSON.stringify(mfStoredPlugins)); mfCompiledCache.clear(); renderMfSourceTabs(); }
 async function installSingleMfPluginFromCode(code, srcUrl = '') {
   const tempRec = { id: 'mf_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), enabled: true, builtin: false, srcUrl, code };
-  const inst = compileMfPlugin(tempRec);
-  const finalSrc = srcUrl || inst.srcUrl || '';
+  const inst = compileMfPlugin(tempRec), finalSrc = srcUrl || inst.srcUrl || '';
   const existIdx = mfStoredPlugins.findIndex(p => { try { return compileMfPlugin(p).platform === inst.platform; } catch { return false; } });
   const record = { id: existIdx >= 0 ? mfStoredPlugins[existIdx].id : tempRec.id, enabled: true, builtin: false, srcUrl: finalSrc, code };
   if (existIdx >= 0) mfStoredPlugins[existIdx] = record; else mfStoredPlugins.unshift(record);
-  saveMfPlugins();
-  return inst.platform;
+  saveMfPlugins(); return inst.platform;
 }
 async function installMfFromUrl(url) {
   const cleanUrl = (url || '').trim(); if (!cleanUrl) throw new Error('请输入有效链接');
@@ -1110,43 +821,27 @@ async function installMfFromUrl(url) {
     const parsed = JSON.parse(trimmed), items = Array.isArray(parsed) ? parsed : (parsed.plugins || []);
     if (!items.length) throw new Error('订阅 JSON 中未找到 plugins');
     let ok = 0, fail = 0;
-    for (const item of items) {
-      if (!item?.url) continue;
-      try { const jsCode = await httpGetText(item.url); await installSingleMfPluginFromCode(jsCode, item.url); ok++; } catch { fail++; }
-    }
+    for (const item of items) { if (!item?.url) continue; try { await installSingleMfPluginFromCode(await httpGetText(item.url), item.url); ok++; } catch { fail++; } }
     return `订阅安装完成：成功 ${ok} 个${fail ? `，失败 ${fail} 个` : ''}`;
   }
-  const pname = await installSingleMfPluginFromCode(txt, cleanUrl);
-  return `已安装 MusicFree 插件【${pname}】`;
+  return `已安装 MusicFree 插件【${await installSingleMfPluginFromCode(txt, cleanUrl)}】`;
 }
-
 function renderMfSourceTabs() {
   const enabledList = getAllLoadedMfPlugins().filter(x => x.rec.enabled && x.inst);
   const cntEl = document.getElementById('mfPluginCount'); if (cntEl) cntEl.textContent = String(enabledList.length);
   const tabs = document.getElementById('mfSourceTabs'); if (!tabs) return;
   tabs.innerHTML = '';
   const allBtn = document.createElement('button');
-  allBtn.className = 'day-pill' + (mfActivePlatform === 'all' ? ' active' : '');
-  allBtn.textContent = `全部源(${enabledList.length})`;
-  allBtn.onclick = () => { mfActivePlatform = 'all'; renderMfSourceTabs(); };
-  tabs.appendChild(allBtn);
+  allBtn.className = 'day-pill' + (mfActivePlatform === 'all' ? ' active' : ''); allBtn.textContent = `全部源(${enabledList.length})`;
+  allBtn.onclick = () => { mfActivePlatform = 'all'; renderMfSourceTabs(); }; tabs.appendChild(allBtn);
   enabledList.forEach(({ inst }) => {
-    const b = document.createElement('button');
-    b.className = 'day-pill' + (mfActivePlatform === inst.platform ? ' active' : '');
-    b.textContent = inst.platform;
-    b.onclick = () => { mfActivePlatform = inst.platform; renderMfSourceTabs(); };
-    tabs.appendChild(b);
+    const b = document.createElement('button'); b.className = 'day-pill' + (mfActivePlatform === inst.platform ? ' active' : '');
+    b.textContent = inst.platform; b.onclick = () => { mfActivePlatform = inst.platform; renderMfSourceTabs(); }; tabs.appendChild(b);
   });
 }
-
 function openMfPluginManagerModal() {
   const box = document.createElement('div');
-  box.innerHTML = `
-    <div class="sub-text" style="margin-bottom:8px;">完全兼容 <a href="https://musicfree.catcat.work" target="_blank" rel="noopener" style="color:var(--primary); font-weight:600;">MusicFree</a> 插件协议：支持 <code>.json</code> 订阅源、单链接 <code>.js</code> 或本地导入。</div>
-    <div class="search-row" style="margin-bottom:8px;"><input id="mfUrlInput" placeholder="粘贴 MusicFree 订阅 .json 或 .js 链接..." /><button class="btn btn-sm" id="mfInstallUrlBtn" style="white-space:nowrap;">安装</button></div>
-    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;"><button class="btn btn-sm btn-green" id="mfInstallOfficialBtn">⚡ 装官方示例源</button><button class="btn btn-sm btn-outline" id="mfImportLocalBtn">📁 本地 .js</button><button class="btn btn-sm btn-outline" id="mfUpdateAllBtn">🔄 全部更新</button></div>
-    <div id="mfPluginListHost"></div>
-  `;
+  box.innerHTML = `<div class="sub-text" style="margin-bottom:8px;">完全兼容 <a href="https://musicfree.catcat.work" target="_blank" rel="noopener" style="color:var(--primary); font-weight:600;">MusicFree</a> 插件协议：支持 <code>.json</code> 订阅源、单链接 <code>.js</code> 或本地导入。</div><div class="search-row" style="margin-bottom:8px;"><input id="mfUrlInput" placeholder="粘贴 MusicFree 订阅 .json 或 .js 链接..." /><button class="btn btn-sm" id="mfInstallUrlBtn" style="white-space:nowrap;">安装</button></div><div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;"><button class="btn btn-sm btn-green" id="mfInstallOfficialBtn">⚡ 装官方示例源</button><button class="btn btn-sm btn-outline" id="mfImportLocalBtn">📁 本地 .js</button><button class="btn btn-sm btn-outline" id="mfUpdateAllBtn">🔄 全部更新</button></div><div id="mfPluginListHost"></div>`;
   const renderList = () => {
     const host = box.querySelector('#mfPluginListHost'), items = getAllLoadedMfPlugins();
     if (!items.length) { host.innerHTML = '<div class="sub-text">暂无插件</div>'; return; }
@@ -1165,8 +860,7 @@ function openMfPluginManagerModal() {
   box.querySelector('#mfInstallUrlBtn').onclick = async () => {
     const u = box.querySelector('#mfUrlInput').value.trim(); if (!u) return alert('请先输入链接');
     showToast('🔌 正在安装 MusicFree 插件...');
-    try { const msg = await installMfFromUrl(u); box.querySelector('#mfUrlInput').value = ''; showToast('✅ ' + msg, 2800); renderList(); }
-    catch (e) { alert('安装失败：' + e.message); }
+    try { const msg = await installMfFromUrl(u); box.querySelector('#mfUrlInput').value = ''; showToast('✅ ' + msg, 2800); renderList(); } catch (e) { alert('安装失败：' + e.message); }
   };
   box.querySelector('#mfInstallOfficialBtn').onclick = async () => {
     showToast('⚡ 正在拉取官方示例源...');
@@ -1194,7 +888,6 @@ document.getElementById('fallbackPluginFileInput').addEventListener('change', as
   e.target.value = '';
 });
 
-// LRC 同步歌词
 let parsedLyrics = [], activeLyricIndex = -1;
 function parseLrc(rawLrc) {
   const lines = [], regex = /\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/g;
@@ -1214,19 +907,13 @@ function renderLyricsBox(rawLrc, fallbackMsg = '暂无同步歌词') {
 }
 function updateActiveLyric(currentMs) {
   if (!parsedLyrics.length) return;
-  let idx = -1;
-  for (let i = 0; i < parsedLyrics.length; i++) { if (parsedLyrics[i].timeMs <= currentMs + 250) idx = i; else break; }
+  let idx = -1; for (let i = 0; i < parsedLyrics.length; i++) { if (parsedLyrics[i].timeMs <= currentMs + 250) idx = i; else break; }
   if (idx === activeLyricIndex) return;
-  activeLyricIndex = idx;
-  const box = document.getElementById('lyricBox'); if (!box) return;
+  activeLyricIndex = idx; const box = document.getElementById('lyricBox'); if (!box) return;
   box.querySelectorAll('.lyric-line.active').forEach(el => el.classList.remove('active'));
-  if (idx >= 0) {
-    const el = box.querySelector(`.lyric-line[data-lidx="${idx}"]`);
-    if (el) { el.classList.add('active'); box.scrollTo({ top: Math.max(0, el.offsetTop - box.clientHeight / 2 + 12), behavior: 'smooth' }); }
-  }
+  if (idx >= 0) { const el = box.querySelector(`.lyric-line[data-lidx="${idx}"]`); if (el) { el.classList.add('active'); box.scrollTo({ top: Math.max(0, el.offsetTop - box.clientHeight / 2 + 12), behavior: 'smooth' }); } }
 }
 
-// 助眠白噪音与定时关闭
 let ambCtx = null, ambNodes = [], ambGain = null, sleepTimeout = null;
 function stopAmbient() {
   ambNodes.forEach(n => { try { n.stop?.(); n.disconnect?.(); } catch {} }); ambNodes = [];
@@ -1238,17 +925,12 @@ function applySleepTimer() {
   const mins = Number(document.getElementById('sleepTimer').value);
   if (mins > 0) {
     document.getElementById('timerStatus').textContent = `⏱️ 将在 ${mins} 分钟后自动停止播放`;
-    sleepTimeout = setTimeout(async () => {
-      stopAmbient();
-      if (Capacitor.isNativePlatform()) { try { await NativeTools.audioStop(); } catch {} } else audioPlayer.pause();
-      playPauseBtn.textContent = '▶️ 播放';
-    }, mins * 60000);
+    sleepTimeout = setTimeout(async () => { stopAmbient(); if (Capacitor.isNativePlatform()) { try { await NativeTools.audioStop(); } catch {} } else audioPlayer.pause(); playPauseBtn.textContent = '▶️ 播放'; }, mins * 60000);
   } else document.getElementById('timerStatus').textContent = '';
 }
 document.getElementById('sleepTimer').addEventListener('change', applySleepTimer);
 function playAmbient(type, btnEl) {
-  stopAmbient();
-  ambCtx = ambCtx || new (window.AudioContext || window.webkitAudioContext)();
+  stopAmbient(); ambCtx = ambCtx || new (window.AudioContext || window.webkitAudioContext)();
   if (ambCtx.state === 'suspended') ambCtx.resume();
   ambGain = ambCtx.createGain(); ambGain.gain.value = Number(document.getElementById('ambientVol').value); ambGain.connect(ambCtx.destination);
   if (type === 'alpha') {
@@ -1271,7 +953,6 @@ document.querySelectorAll('.ambient-btn').forEach(btn => btn.addEventListener('c
 document.getElementById('stopAmbientBtn').addEventListener('click', stopAmbient);
 document.getElementById('ambientVol').addEventListener('input', (e) => { if (ambGain) ambGain.gain.value = Number(e.target.value); });
 
-// 播放器控制、EQ、歌单与 MusicFree 聚合搜歌
 const audioPlayer = document.getElementById('audioPlayer'), musicSeek = document.getElementById('musicSeek'), curTimeEl = document.getElementById('curTime'), durTimeEl = document.getElementById('durTime'), playPauseBtn = document.getElementById('playPauseBtn'), loopModeBtn = document.getElementById('loopModeBtn');
 let tracks = JSON.parse(localStorage.getItem('tracks_v4') || '[]');
 let onlineMusicHist = JSON.parse(localStorage.getItem('online_music_hist_v1') || '[]');
@@ -1280,15 +961,10 @@ let currentTrackIdx = -1, isPlayingOnlineStream = false, loopMode = 'list', acti
 const EQ_PRESETS = { flat: { b: 0, m: 0, t: 0 }, bass: { b: 9, m: 1, t: -1 }, vocal: { b: -2, m: 6, t: 4 }, sleep: { b: 2, m: -2, t: -7 }, hall: { b: 5, m: 2, t: 6 } };
 
 function fmtSec(sec) { if (!isFinite(sec) || sec < 0) return '00:00'; return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(Math.floor(sec % 60)).padStart(2, '0')}`; }
-function updateTrackUiHeader(title, format) {
-  document.getElementById('nowPlaying').textContent = '🎵 ' + title;
-  const badge = document.getElementById('nowFormatBadge'); badge.textContent = format || 'AUDIO'; badge.style.display = 'inline-block';
-}
+function updateTrackUiHeader(title, format) { document.getElementById('nowPlaying').textContent = '🎵 ' + title; const badge = document.getElementById('nowFormatBadge'); badge.textContent = format || 'AUDIO'; badge.style.display = 'inline-block'; }
 function syncEqToEngine() {
   const b = Number(document.getElementById('eqBass').value), m = Number(document.getElementById('eqMid').value), t = Number(document.getElementById('eqTreble').value);
-  document.getElementById('eqBassVal').textContent = `${b > 0 ? '+' : ''}${b}dB`;
-  document.getElementById('eqMidVal').textContent = `${m > 0 ? '+' : ''}${m}dB`;
-  document.getElementById('eqTrebleVal').textContent = `${t > 0 ? '+' : ''}${t}dB`;
+  document.getElementById('eqBassVal').textContent = `${b > 0 ? '+' : ''}${b}dB`; document.getElementById('eqMidVal').textContent = `${m > 0 ? '+' : ''}${m}dB`; document.getElementById('eqTrebleVal').textContent = `${t > 0 ? '+' : ''}${t}dB`;
   if (Capacitor.isNativePlatform()) NativeTools.audioSetEq({ bass: b, mid: m, treble: t, preset: activeEqPreset }).catch(() => {});
 }
 document.querySelectorAll('#eqPresets .eq-pill').forEach(btn => btn.addEventListener('click', () => {
@@ -1320,9 +996,7 @@ function renderOnlineHistoryBox() {
     onlineMusicHist.forEach(kw => { const p = document.createElement('button'); p.className = 'day-pill'; p.textContent = kw; p.onclick = () => { document.getElementById('onlineMusicQuery').value = kw; searchOnlineMusic(kw); }; pills.appendChild(p); });
     box.appendChild(pills);
     searchHdr.querySelector('#clrSearchHistBtn').onclick = () => { onlineMusicHist = []; localStorage.setItem('online_music_hist_v1', '[]'); renderOnlineHistoryBox(); };
-  } else {
-    const empty = document.createElement('div'); empty.className = 'sub-text'; empty.textContent = '暂无搜歌历史，搜索任意歌名或歌手后自动记录'; box.appendChild(empty);
-  }
+  } else { const empty = document.createElement('div'); empty.className = 'sub-text'; empty.textContent = '暂无搜歌历史，搜索任意歌名或歌手后自动记录'; box.appendChild(empty); }
   if (onlinePlayHist.length) {
     const playHdr = document.createElement('div'); playHdr.className = 'sub-text';
     playHdr.style.cssText = 'display:flex; justify-content:space-between; margin:6px 0 4px; padding-top:6px; border-top:1px dashed var(--border);';
@@ -1330,97 +1004,58 @@ function renderOnlineHistoryBox() {
     box.appendChild(playHdr);
     playHdr.querySelector('#clrPlayHistBtn').onclick = () => { onlinePlayHist = []; localStorage.setItem('online_play_hist_v1', '[]'); renderOnlineHistoryBox(); };
     const pRow = document.createElement('div'); pRow.className = 'day-tabs'; pRow.style.paddingBottom = '2px';
-    onlinePlayHist.forEach(item => {
-      const b = document.createElement('button'); b.className = 'day-pill'; b.textContent = `▶️ ${item.title}`;
-      b.onclick = () => playSingleOnlineUrl(item.url, item.title, item.format, item.headers || {});
-      pRow.appendChild(b);
-    });
+    onlinePlayHist.forEach(item => { const b = document.createElement('button'); b.className = 'day-pill'; b.textContent = `▶️ ${item.title}`; b.onclick = () => playSingleOnlineUrl(item.url, item.title, item.format, item.headers || {}); pRow.appendChild(b); });
     box.appendChild(pRow);
   }
 }
-
 async function playSingleOnlineUrl(url, title, format, headers = {}, rawLrc = '') {
   isPlayingOnlineStream = true; currentTrackIdx = -1; renderTracks();
-  updateTrackUiHeader(title, format);
-  renderLyricsBox(rawLrc, rawLrc ? '' : '🎵 正在播放（当前曲目暂无同步歌词）');
+  updateTrackUiHeader(title, format); renderLyricsBox(rawLrc, rawLrc ? '' : '🎵 正在播放（暂无同步歌词）');
   onlinePlayHist = [{ url, title, format, headers }, ...onlinePlayHist.filter(x => x.url !== url)].slice(0, 12);
-  localStorage.setItem('online_play_hist_v1', JSON.stringify(onlinePlayHist));
-  renderOnlineHistoryBox();
-
+  localStorage.setItem('online_play_hist_v1', JSON.stringify(onlinePlayHist)); renderOnlineHistoryBox();
   if (Capacitor.isNativePlatform()) {
     try {
-      await NativeTools.audioPlayList({
-        paths: [url], titles: [title], formats: [format || 'STREAM'], headers: [JSON.stringify(headers || {})],
-        index: 0, loopMode: 'single', speed: Number(document.getElementById('playSpeed').value),
-        bass: Number(document.getElementById('eqBass').value), mid: Number(document.getElementById('eqMid').value), treble: Number(document.getElementById('eqTreble').value)
-      });
+      await NativeTools.audioPlayList({ paths: [url], titles: [title], formats: [format || 'STREAM'], headers: [JSON.stringify(headers || {})], index: 0, loopMode: 'single', speed: Number(document.getElementById('playSpeed').value), bass: Number(document.getElementById('eqBass').value), mid: Number(document.getElementById('eqMid').value), treble: Number(document.getElementById('eqTreble').value) });
       playPauseBtn.textContent = '⏸ 暂停'; applySleepTimer();
     } catch (e) { alert('在线播放失败：' + e.message); }
   } else { audioPlayer.src = url; audioPlayer.play().catch(() => {}); }
 }
-
 async function playMusicFreeSong(pluginInst, songItem) {
   const quality = document.getElementById('mfQualitySelect')?.value || 'standard';
   showToast(`🎵 正在通过【${pluginInst.platform}】解析音源...`);
-  let mediaRes = null;
-  if (typeof pluginInst.getMediaSource === 'function') mediaRes = await pluginInst.getMediaSource(songItem, quality);
-  else if (songItem.url) mediaRes = { url: songItem.url };
-  if (!mediaRes?.url) throw new Error('该音源未返回可播放地址（可能需会员或换源）');
-  const headers = { ...(mediaRes.headers || {}) };
-  if (mediaRes.userAgent && !headers['User-Agent']) headers['User-Agent'] = mediaRes.userAgent;
-  const fullTitle = `${songItem.title || '未知歌曲'} - ${songItem.artist || '未知歌手'}`;
-  const fmt = /\.flac/i.test(mediaRes.url) ? 'FLAC' : (/\.m4a/i.test(mediaRes.url) ? 'M4A' : 'MP3');
-
+  const mediaRes = typeof pluginInst.getMediaSource === 'function' ? await pluginInst.getMediaSource(songItem, quality) : { url: songItem.url };
+  if (!mediaRes?.url) throw new Error('该音源未返回可播放地址');
+  const headers = { ...(mediaRes.headers || {}) }; if (mediaRes.userAgent && !headers['User-Agent']) headers['User-Agent'] = mediaRes.userAgent;
+  const fullTitle = `${songItem.title || '未知歌曲'} - ${songItem.artist || '未知歌手'}`, fmt = /\.flac/i.test(mediaRes.url) ? 'FLAC' : (/\.m4a/i.test(mediaRes.url) ? 'M4A' : 'MP3');
   let rawLrc = '';
-  if (typeof pluginInst.getLyric === 'function') {
-    try { const lrcRes = await pluginInst.getLyric(songItem); rawLrc = lrcRes?.rawLrc || (lrcRes?.lrc ? await httpGetText(lrcRes.lrc) : ''); } catch {}
-  }
+  if (typeof pluginInst.getLyric === 'function') { try { const l = await pluginInst.getLyric(songItem); rawLrc = l?.rawLrc || (l?.lrc ? await httpGetText(l.lrc) : ''); } catch {} }
   await playSingleOnlineUrl(mediaRes.url, fullTitle, fmt, headers, rawLrc);
 }
-
 async function playTrackAt(idx) {
   if (!tracks.length) return;
   isPlayingOnlineStream = false; currentTrackIdx = (idx + tracks.length) % tracks.length;
-  const t = tracks[currentTrackIdx];
-  updateTrackUiHeader(t.name, t.format);
-  renderLyricsBox('', '🎵 正在播放歌单曲目');
-  renderTracks();
+  const t = tracks[currentTrackIdx]; updateTrackUiHeader(t.name, t.format); renderLyricsBox('', '🎵 正在播放歌单曲目'); renderTracks();
   if (Capacitor.isNativePlatform()) {
     try {
-      await NativeTools.audioPlayList({
-        paths: tracks.map(getTrackSource), titles: tracks.map(x => x.name || '音乐'),
-        formats: tracks.map(x => x.format || 'AUDIO'), headers: tracks.map(getTrackHeadersJson),
-        index: currentTrackIdx, loopMode, speed: Number(document.getElementById('playSpeed').value),
-        bass: Number(document.getElementById('eqBass').value), mid: Number(document.getElementById('eqMid').value), treble: Number(document.getElementById('eqTreble').value)
-      });
+      await NativeTools.audioPlayList({ paths: tracks.map(getTrackSource), titles: tracks.map(x => x.name || '音乐'), formats: tracks.map(x => x.format || 'AUDIO'), headers: tracks.map(getTrackHeadersJson), index: currentTrackIdx, loopMode, speed: Number(document.getElementById('playSpeed').value), bass: Number(document.getElementById('eqBass').value), mid: Number(document.getElementById('eqMid').value), treble: Number(document.getElementById('eqTreble').value) });
       playPauseBtn.textContent = '⏸ 暂停'; applySleepTimer();
     } catch (err) { playPauseBtn.textContent = '▶️ 播放'; alert('播放失败：' + err.message); }
   } else { audioPlayer.src = getTrackSource(t); audioPlayer.play().catch(() => {}); }
 }
-
 audioPlayer.addEventListener('timeupdate', () => {
   if (!Capacitor.isNativePlatform() && !isUserSeeking && audioPlayer.duration) {
     curTimeEl.textContent = fmtSec(audioPlayer.currentTime); durTimeEl.textContent = fmtSec(audioPlayer.duration);
-    musicSeek.value = (audioPlayer.currentTime / audioPlayer.duration) * 100;
-    updateActiveLyric(audioPlayer.currentTime * 1000);
+    musicSeek.value = (audioPlayer.currentTime / audioPlayer.duration) * 100; updateActiveLyric(audioPlayer.currentTime * 1000);
   }
 });
 setInterval(async () => {
   if (!Capacitor.isNativePlatform() || document.visibilityState !== 'visible') return;
   try {
     const st = await NativeTools.audioGetStatus(); if (!st) return;
-    nativeDurationMs = st.durationMs || 0;
-    playPauseBtn.textContent = st.playing ? '⏸ 暂停' : '▶️ 播放';
-    if (!isPlayingOnlineStream && st.index >= 0 && st.index < tracks.length && st.index !== currentTrackIdx) {
-      currentTrackIdx = st.index; updateTrackUiHeader(tracks[currentTrackIdx].name, tracks[currentTrackIdx].format); renderTracks();
-    } else if (st.title && document.getElementById('nowPlaying').textContent !== '🎵 ' + st.title && st.durationMs > 0) {
-      updateTrackUiHeader(st.title, st.format || 'AUDIO');
-    }
-    if (!isUserSeeking && nativeDurationMs > 0) {
-      curTimeEl.textContent = fmtSec((st.currentMs || 0) / 1000); durTimeEl.textContent = fmtSec(nativeDurationMs / 1000);
-      musicSeek.value = ((st.currentMs || 0) / nativeDurationMs) * 100;
-      updateActiveLyric(st.currentMs || 0);
-    }
+    nativeDurationMs = st.durationMs || 0; playPauseBtn.textContent = st.playing ? '⏸ 暂停' : '▶️ 播放';
+    if (!isPlayingOnlineStream && st.index >= 0 && st.index < tracks.length && st.index !== currentTrackIdx) { currentTrackIdx = st.index; updateTrackUiHeader(tracks[currentTrackIdx].name, tracks[currentTrackIdx].format); renderTracks(); }
+    else if (st.title && document.getElementById('nowPlaying').textContent !== '🎵 ' + st.title && st.durationMs > 0) updateTrackUiHeader(st.title, st.format || 'AUDIO');
+    if (!isUserSeeking && nativeDurationMs > 0) { curTimeEl.textContent = fmtSec((st.currentMs || 0) / 1000); durTimeEl.textContent = fmtSec(nativeDurationMs / 1000); musicSeek.value = ((st.currentMs || 0) / nativeDurationMs) * 100; updateActiveLyric(st.currentMs || 0); }
   } catch {}
 }, 450);
 
@@ -1447,30 +1082,23 @@ async function searchOnlineMusic(query) {
   const q = query.trim(), resBox = document.getElementById('onlineMusicResults');
   resBox.innerHTML = ''; if (!q) return;
   onlineMusicHist = [q, ...onlineMusicHist.filter(x => x !== q)].slice(0, 12);
-  localStorage.setItem('online_music_hist_v1', JSON.stringify(onlineMusicHist));
-  renderOnlineHistoryBox();
-
+  localStorage.setItem('online_music_hist_v1', JSON.stringify(onlineMusicHist)); renderOnlineHistoryBox();
   const plugins = getAllLoadedMfPlugins().filter(x => x.rec.enabled && x.inst && typeof x.inst.search === 'function' && (mfActivePlatform === 'all' || x.inst.platform === mfActivePlatform));
   if (!plugins.length) { resBox.innerHTML = '<div class="sub-text" style="padding:8px;">请先点上方「🔌 插件管理」启用或安装 MusicFree 插件！</div>'; return; }
-
   resBox.innerHTML = `<div class="sub-text" style="padding:8px;">🔍 MusicFree 引擎正在 ${plugins.length} 个音源并行搜索「${q}」...</div>`;
   const results = [];
-  await Promise.allSettled(plugins.map(async ({ inst }) => {
-    try { const r = await inst.search(q, 1, 'music'); (r?.data || []).slice(0, 10).forEach(item => results.push({ plugin: inst, item })); } catch {}
-  }));
+  await Promise.allSettled(plugins.map(async ({ inst }) => { try { const r = await inst.search(q, 1, 'music'); (r?.data || []).slice(0, 10).forEach(item => results.push({ plugin: inst, item })); } catch {} }));
   resBox.innerHTML = '';
-  if (!results.length) { resBox.innerHTML = '<div class="sub-text" style="padding:8px;">未搜到结果，试试切换音源或安装更多 MusicFree 插件~</div>'; return; }
-
+  if (!results.length) { resBox.innerHTML = '<div class="sub-text" style="padding:8px;">未搜到结果，试试切换音源或安装更多插件~</div>'; return; }
   results.slice(0, 24).forEach(({ plugin, item }) => {
     const row = document.createElement('div'); row.className = 'item-row';
     const title = item.title || '未知歌曲', artist = item.artist || '未知歌手';
-    row.innerHTML = `<div style="display:flex; gap:10px; align-items:center; flex:1; min-width:0;">${item.artwork ? `<img src="${item.artwork}" class="cover-img" />` : `<div class="cover-img" style="display:flex;align-items:center;justify-content:center;">🎵</div>`}<div style="min-width:0;"><div style="font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${title}</div><div class="sub-text"><span class="badge badge-alarm">${plugin.platform}</span> ${artist}${item.album ? ' · ' + item.album : ''}</div></div></div><div style="display:flex; gap:4px; flex-shrink:0;"><button class="btn btn-sm play-online">▶️</button><button class="btn btn-sm btn-outline fav-online">⭐收藏</button></div>`;
+    row.innerHTML = `<div style="display:flex; gap:10px; align-items:center; flex:1; min-width:0;">${item.artwork ? `<img src="${item.artwork}" class="cover-img" />` : `<div class="cover-img" style="display:flex;align-items:center;justify-content:center;">🎵</div>`}<div style="min-width:0;"><div style="font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${title}</div><div class="sub-text"><span class="badge badge-alarm">${plugin.platform}</span> ${artist}</div></div></div><div style="display:flex; gap:4px; flex-shrink:0;"><button class="btn btn-sm play-online">▶️</button><button class="btn btn-sm btn-outline fav-online">⭐收藏</button></div>`;
     row.querySelector('.play-online').onclick = async () => { try { await playMusicFreeSong(plugin, item); } catch (e) { alert('播放失败：' + e.message); } };
     row.querySelector('.fav-online').onclick = async (e) => {
       e.target.textContent = '解析中...';
       try {
-        const quality = document.getElementById('mfQualitySelect')?.value || 'standard';
-        const m = typeof plugin.getMediaSource === 'function' ? await plugin.getMediaSource(item, quality) : { url: item.url };
+        const m = typeof plugin.getMediaSource === 'function' ? await plugin.getMediaSource(item, document.getElementById('mfQualitySelect')?.value || 'standard') : { url: item.url };
         if (!m?.url) throw new Error('无法获取音频链接');
         const hdrs = { ...(m.headers || {}) }; if (m.userAgent && !hdrs['User-Agent']) hdrs['User-Agent'] = m.userAgent;
         tracks.push({ id: Date.now() + Math.random(), name: `${title} - ${artist}`, format: plugin.platform, size: 0, onlineUrl: m.url, headers: hdrs, isOnlineRef: true });
@@ -1482,10 +1110,7 @@ async function searchOnlineMusic(query) {
 }
 document.getElementById('searchOnlineMusicBtn').addEventListener('click', () => searchOnlineMusic(document.getElementById('onlineMusicQuery').value));
 document.getElementById('onlineMusicQuery').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchOnlineMusic(e.target.value); });
-document.getElementById('refreshOnlineMusicBtn').addEventListener('click', () => {
-  const cur = document.getElementById('onlineMusicQuery').value.trim() || onlineMusicHist[0] || '华语经典';
-  document.getElementById('onlineMusicQuery').value = cur; searchOnlineMusic(cur); showToast('🔄 已刷新 MusicFree 搜歌结果');
-});
+document.getElementById('refreshOnlineMusicBtn').addEventListener('click', () => { const cur = document.getElementById('onlineMusicQuery').value.trim() || onlineMusicHist[0] || '华语经典'; document.getElementById('onlineMusicQuery').value = cur; searchOnlineMusic(cur); showToast('🔄 已刷新'); });
 
 async function syncPlaylistWithoutInterrupt() {
   if (!Capacitor.isNativePlatform() || isPlayingOnlineStream) return;
@@ -1508,11 +1133,8 @@ function renderTracks() {
 }
 document.getElementById('nativeImportMusicBtn').addEventListener('click', async () => {
   if (Capacitor.isNativePlatform()) {
-    try {
-      const res = await NativeTools.pickAudioRefs({ multiple: true }); const added = res.files || []; if (!added.length) return;
-      added.forEach(f => tracks.push({ id: Date.now() + Math.random(), ...f }));
-      saveTracks(); await syncPlaylistWithoutInterrupt(); showToast(`✅ 已直读关联 ${added.length} 首（0MB复制）`);
-    } catch (e) { if (!String(e.message).includes('取消')) alert('导入失败：' + e.message); }
+    try { const res = await NativeTools.pickAudioRefs({ multiple: true }); const added = res.files || []; if (!added.length) return; added.forEach(f => tracks.push({ id: Date.now() + Math.random(), ...f })); saveTracks(); await syncPlaylistWithoutInterrupt(); showToast(`✅ 已关联 ${added.length} 首`); }
+    catch (e) { if (!String(e.message).includes('取消')) alert('导入失败：' + e.message); }
   } else document.getElementById('fallbackMusicInput').click();
 });
 document.getElementById('fallbackMusicInput').addEventListener('change', (e) => {
@@ -1520,7 +1142,7 @@ document.getElementById('fallbackMusicInput').addEventListener('change', (e) => 
   e.target.value = ''; saveTracks();
 });
 
-// ==================== 8. A股专区 + 全球股市 + 可滑动走势图 ====================
+// ==================== 7. A股专区 + 全球股市 + 可滑动走势图 ====================
 let marketData = { updatedAt: '加载中...', globalNews: [], indices: [], stocks: [] };
 let activeRegion = 'all', activeStockMkt = 'all';
 let customWatchlist = JSON.parse(localStorage.getItem('custom_watchlist_v1') || '[]');
@@ -1530,30 +1152,23 @@ function renderMiniSparkline(history, isUp, height = 40) {
   const min = Math.min(...history), max = Math.max(...history), span = max - min || 1, w = 240, pad = 3;
   const pts = history.map((v, i) => [(pad + (i / (history.length - 1)) * (w - pad * 2)).toFixed(1), (height - pad - ((v - min) / span) * (height - pad * 2)).toFixed(1)]);
   const line = pts.map(p => p.join(',')).join(' '), area = `${pts[0][0]},${height} ${line} ${pts[pts.length - 1][0]},${height}`;
-  const color = isUp ? '#ef4444' : '#10b981', fill = isUp ? 'rgba(239,68,68,0.14)' : 'rgba(16,185,129,0.14)';
-  return `<svg viewBox="0 0 ${w} ${height}" preserveAspectRatio="none" style="width:100%; height:${height}px; display:block;"><polygon points="${area}" fill="${fill}" /><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
+  return `<svg viewBox="0 0 ${w} ${height}" preserveAspectRatio="none" style="width:100%; height:${height}px; display:block;"><polygon points="${area}" fill="${isUp ? 'rgba(239,68,68,0.14)' : 'rgba(16,185,129,0.14)'}" /><polyline points="${line}" fill="none" stroke="${isUp ? '#ef4444' : '#10b981'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
 }
 function mountInteractiveChart(container, history, dates, isUp) {
   container.innerHTML = '';
   if (!history || history.length < 2) { container.innerHTML = '<div class="sub-text" style="padding:20px; text-align:center;">暂无走势</div>'; return; }
   const scrubBar = document.createElement('div'); scrubBar.className = 'scrub-bar';
   const lastIdx = history.length - 1, firstVal = history[0] || 1;
-  const updateReadout = (idx) => {
-    const val = history[idx], dt = dates?.[idx] || `点${idx + 1}`, dp = (((val - firstVal) / firstVal) * 100).toFixed(2), sign = Number(dp) >= 0 ? '+' : '';
-    scrubBar.innerHTML = `<span>🕒 ${dt}</span><span>💰 <strong>${val}</strong></span><span class="${Number(dp) >= 0 ? 'up' : 'down'}">${sign}${dp}%</span>`;
-  };
+  const updateReadout = (idx) => { const val = history[idx], dt = dates?.[idx] || `点${idx + 1}`, dp = (((val - firstVal) / firstVal) * 100).toFixed(2); scrubBar.innerHTML = `<span>🕒 ${dt}</span><span>💰 <strong>${val}</strong></span><span class="${Number(dp) >= 0 ? 'up' : 'down'}">${Number(dp) >= 0 ? '+' : ''}${dp}%</span>`; };
   updateReadout(lastIdx);
   const chartBox = document.createElement('div'); chartBox.className = 'chart-interactive';
   const w = 320, h = 155, pad = 10, min = Math.min(...history), max = Math.max(...history), span = max - min || 1;
   const coords = history.map((v, i) => ({ x: pad + (i / (history.length - 1)) * (w - pad * 2), y: h - pad - ((v - min) / span) * (h - pad * 2) }));
   const line = coords.map(c => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' '), area = `${coords[0].x.toFixed(1)},${h - pad} ${line} ${coords[lastIdx].x.toFixed(1)},${h - pad}`;
-  const color = isUp ? '#ef4444' : '#10b981', fill = isUp ? 'rgba(239,68,68,0.16)' : 'rgba(16,185,129,0.16)';
-  chartBox.innerHTML = `<svg id="scrubSvg" viewBox="0 0 ${w} ${h}" style="width:100%; height:160px; display:block;"><polygon points="${area}" fill="${fill}" /><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.4" /><line id="crossLine" x1="${coords[lastIdx].x}" y1="${pad}" x2="${coords[lastIdx].x}" y2="${h - pad}" stroke="#6366f1" stroke-width="1.4" stroke-dasharray="4 3" /><circle id="crossDot" cx="${coords[lastIdx].x}" cy="${coords[lastIdx].y}" r="5" fill="${color}" stroke="#fff" stroke-width="2" /></svg><div class="time-row"><span>低: ${min.toFixed(2)}</span><span>👆 左右滑动看价格与时间</span><span>高: ${max.toFixed(2)}</span></div>`;
+  const color = isUp ? '#ef4444' : '#10b981';
+  chartBox.innerHTML = `<svg id="scrubSvg" viewBox="0 0 ${w} ${h}" style="width:100%; height:160px; display:block;"><polygon points="${area}" fill="${isUp ? 'rgba(239,68,68,0.16)' : 'rgba(16,185,129,0.16)'}" /><polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.4" /><line id="crossLine" x1="${coords[lastIdx].x}" y1="${pad}" x2="${coords[lastIdx].x}" y2="${h - pad}" stroke="#6366f1" stroke-width="1.4" stroke-dasharray="4 3" /><circle id="crossDot" cx="${coords[lastIdx].x}" cy="${coords[lastIdx].y}" r="5" fill="${color}" stroke="#fff" stroke-width="2" /></svg><div class="time-row"><span>低: ${min.toFixed(2)}</span><span>👆 左右滑动看价格与时间</span><span>高: ${max.toFixed(2)}</span></div>`;
   const svg = chartBox.querySelector('#scrubSvg'), cl = chartBox.querySelector('#crossLine'), cd = chartBox.querySelector('#crossDot');
-  const handleMove = (cx) => {
-    const rect = svg.getBoundingClientRect(), idx = Math.round(Math.max(0, Math.min(1, (cx - rect.left) / rect.width)) * (history.length - 1)), pt = coords[idx];
-    cl.setAttribute('x1', pt.x); cl.setAttribute('x2', pt.x); cd.setAttribute('cx', pt.x); cd.setAttribute('cy', pt.y); updateReadout(idx);
-  };
+  const handleMove = (cx) => { const rect = svg.getBoundingClientRect(), idx = Math.round(Math.max(0, Math.min(1, (cx - rect.left) / rect.width)) * (history.length - 1)), pt = coords[idx]; cl.setAttribute('x1', pt.x); cl.setAttribute('x2', pt.x); cd.setAttribute('cx', pt.x); cd.setAttribute('cy', pt.y); updateReadout(idx); };
   svg.addEventListener('touchstart', (e) => { if (e.touches[0]) handleMove(e.touches[0].clientX); }, { passive: true });
   svg.addEventListener('touchmove', (e) => { if (e.touches[0]) { e.preventDefault(); handleMove(e.touches[0].clientX); } }, { passive: false });
   svg.addEventListener('pointerdown', (e) => handleMove(e.clientX));
@@ -1567,38 +1182,30 @@ async function fetchEastMoneyChart(emSecId, range) {
   const history = [], dates = []; let lo = 0, lh = 0, ll = 0, lv = 0;
   klines.forEach(line => { const [dt, op, cl, hi, l, vol] = line.split(','); dates.push(dt); history.push(Number(Number(cl).toFixed(2))); lo = Number(op); lh = Number(hi); ll = Number(l); lv = Number(vol); });
   const price = history[history.length - 1], prev = history.length >= 2 ? history[history.length - 2] : (Number(res?.data?.preKPrice) || price);
-  const change = Number((price - prev).toFixed(2)), changePct = prev ? Number(((change / prev) * 100).toFixed(2)) : 0;
-  return { price, change, changePct, history, dates, open: lo, high: lh, low: ll, volume: lv };
+  const change = Number((price - prev).toFixed(2));
+  return { price, change, changePct: prev ? Number(((change / prev) * 100).toFixed(2)) : 0, history, dates, open: lo, high: lh, low: ll, volume: lv };
 }
 async function fetchYahooChart(symbol, range, interval) {
   const cData = await httpGetJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`);
   const r = cData?.chart?.result?.[0]; if (!r) throw new Error('Yahoo 无数据');
   const meta = r.meta || {}, q = r.indicators?.quote?.[0] || {}, rawCloses = q.close || [], ts = r.timestamp || [], history = [], dates = [];
-  for (let i = 0; i < rawCloses.length; i++) {
-    if (rawCloses[i] != null) {
-      history.push(Number(rawCloses[i].toFixed(2)));
-      const d = new Date((ts[i] || 0) * 1000);
-      dates.push(range === '5d' ? `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
-    }
-  }
+  for (let i = 0; i < rawCloses.length; i++) { if (rawCloses[i] != null) { history.push(Number(rawCloses[i].toFixed(2))); const d = new Date((ts[i] || 0) * 1000); dates.push(range === '5d' ? `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`); } }
   const price = Number((meta.regularMarketPrice || history[history.length - 1] || 0).toFixed(2)), prev = Number((meta.chartPreviousClose || history[0] || price).toFixed(2));
-  const change = Number((price - prev).toFixed(2)), changePct = prev ? Number(((change / prev) * 100).toFixed(2)) : 0;
-  return { price, change, changePct, history, dates, open: Number((q.open?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)), high: Number((q.high?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)), low: Number((q.low?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)), volume: q.volume?.filter(v => v != null).slice(-1)[0] || 0 };
+  const change = Number((price - prev).toFixed(2));
+  return { price, change, changePct: prev ? Number(((change / prev) * 100).toFixed(2)) : 0, history, dates, open: Number((q.open?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)), high: Number((q.high?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)), low: Number((q.low?.filter(v => v != null).slice(-1)[0] || 0).toFixed(2)), volume: q.volume?.filter(v => v != null).slice(-1)[0] || 0 };
 }
 async function fetchSmartChart(item, range, interval) {
   if (item.emSecId) { try { return await fetchEastMoneyChart(item.emSecId, range); } catch {} }
   try { return await fetchYahooChart(item.symbol, range, interval); } catch (e) {
     const s = item.symbol || '', g = s.endsWith('.SS') ? `1.${s.replace('.SS', '')}` : (s.endsWith('.SZ') ? `0.${s.replace('.SZ', '')}` : (s.endsWith('.HK') ? `116.${s.replace('.HK', '').padStart(5, '0')}` : ''));
-    if (g) return await fetchEastMoneyChart(g, range);
-    throw e;
+    if (g) return await fetchEastMoneyChart(g, range); throw e;
   }
 }
 function openStockDetailModal(item) {
   const isUp = (item.changePct || 0) >= 0, sign = isUp ? '+' : '', box = document.createElement('div');
   const newsHtml = (item.news || []).length ? item.news.map(n => `<a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener"><div style="font-weight:500;">${n.title}</div><div class="sub-text">${n.source || '财经'} · ${n.time || ''}</div></a>`).join('') : '<div class="sub-text">暂无快讯</div>';
   box.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;"><span style="font-size:26px; font-weight:700;">${item.price ?? '--'}</span><span class="${isUp ? 'up' : 'down'}" style="font-size:15px;">${sign}${item.change ?? 0} (${sign}${item.changePct ?? 0}%)</span></div><div class="day-tabs" id="rangeTabs" style="margin-bottom:6px;"><button class="day-pill" data-r="5d" data-i="30m">5日分时</button><button class="day-pill active" data-r="1mo" data-i="1d">1月</button><button class="day-pill" data-r="3mo" data-i="1d">3月</button><button class="day-pill" data-r="1y" data-i="1wk">1年</button></div><div id="interactiveChartHost" style="margin-bottom:10px;"></div>${item.open ? `<div class="form-grid" style="font-size:12px; background:var(--card-sub); padding:10px; border-radius:8px; margin-bottom:10px;"><div>今开：<strong>${item.open}</strong></div><div>成交量：<strong>${item.volume ? (item.volume / 10000).toFixed(1) + '万' : '--'}</strong></div><div>最高：<strong class="up">${item.high}</strong></div><div>最低：<strong class="down">${item.low}</strong></div></div>` : ''}<div style="font-weight:600; margin-bottom:6px;">📰 每日消息汇总</div><div class="news-box">${newsHtml}</div>`;
-  const host = box.querySelector('#interactiveChartHost');
-  mountInteractiveChart(host, item.history, item.dates, isUp);
+  const host = box.querySelector('#interactiveChartHost'); mountInteractiveChart(host, item.history, item.dates, isUp);
   box.querySelectorAll('#rangeTabs .day-pill').forEach(btn => btn.addEventListener('click', async () => {
     box.querySelectorAll('#rangeTabs .day-pill').forEach(b => b.classList.remove('active')); btn.classList.add('active');
     host.innerHTML = '<div class="sub-text" style="padding:30px; text-align:center;">加载走势中...</div>';
@@ -1612,22 +1219,20 @@ function renderStocks(keyword = '') {
   const indices = (marketData.indices || []).filter(i => activeRegion === 'all' || i.region === activeRegion);
   const idxGrid = document.getElementById('indicesGrid'); idxGrid.innerHTML = '';
   indices.forEach(i => {
-    const isUp = (i.changePct || 0) >= 0, sign = isUp ? '+' : '', box = document.createElement('div'); box.className = 'idx-box';
-    box.innerHTML = `<div style="font-size:12px; color:var(--sub);">${i.region} · ${i.name}</div><div style="display:flex; justify-content:space-between; align-items:baseline; margin:2px 0;"><span style="font-size:15px; font-weight:700;">${i.price}</span><span class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${sign}${i.changePct}%</span></div>${renderMiniSparkline(i.history, isUp, 36)}`;
+    const isUp = (i.changePct || 0) >= 0, box = document.createElement('div'); box.className = 'idx-box';
+    box.innerHTML = `<div style="font-size:12px; color:var(--sub);">${i.region} · ${i.name}</div><div style="display:flex; justify-content:space-between; align-items:baseline; margin:2px 0;"><span style="font-size:15px; font-weight:700;">${i.price}</span><span class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${isUp ? '+' : ''}${i.changePct}%</span></div>${renderMiniSparkline(i.history, isUp, 36)}`;
     box.onclick = () => openStockDetailModal(i); idxGrid.appendChild(box);
   });
   const gnList = document.getElementById('globalNewsList'), gNews = marketData.globalNews || [];
   gnList.innerHTML = gNews.length ? gNews.map(n => `<a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener"><div style="font-size:13px;">${n.title}</div><div class="sub-text">${n.source} · ${n.time}</div></a>`).join('') : '<div class="sub-text">点击“刷新”获取每日头条</div>';
-
   const allStocks = [...customWatchlist, ...(marketData.stocks || [])], kw = keyword.trim().toLowerCase();
   const filtered = allStocks.filter(s => (activeStockMkt === 'all' || s.market === activeStockMkt) && (!kw || (s.name || '').toLowerCase().includes(kw) || (s.symbol || '').toLowerCase().includes(kw) || (s.market || '').toLowerCase().includes(kw)));
   const list = document.getElementById('stocksList'); list.innerHTML = '';
-  if (!filtered.length) { list.innerHTML = '<div class="sub-text" style="text-align:center; padding:12px;">本地未匹配，请点上方 <strong>🔍 全网搜</strong> 查全球任意股票！</div>'; return; }
+  if (!filtered.length) { list.innerHTML = '<div class="sub-text" style="text-align:center; padding:12px;">本地未匹配，请点上方 <strong>🔍 全网搜</strong>！</div>'; return; }
   filtered.forEach(s => {
-    const isUp = (s.changePct || 0) >= 0, sign = isUp ? '+' : '';
+    const isUp = (s.changePct || 0) >= 0, div = document.createElement('div'); div.className = 'item-row'; div.style.flexDirection = 'column';
     const newsItems = (s.news || []).slice(0, 4).map(n => `<a class="news-link" href="${n.link || '#'}" target="_blank" rel="noopener"><div>${n.title}</div><div class="sub-text">${n.source || ''} · ${n.time || ''}</div></a>`).join('');
-    const div = document.createElement('div'); div.className = 'item-row'; div.style.flexDirection = 'column';
-    div.innerHTML = `<div style="display:flex; justify-content:space-between; width:100%; align-items:center; cursor:pointer;" class="st-head"><div><strong>${s.name}</strong> <span class="badge">${s.market || '全球'}</span><div class="sub-text">${s.symbol} · 点开看交互大图</div></div><div style="text-align:right;"><div style="font-size:16px; font-weight:700;">${s.price}</div><div class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${sign}${s.changePct}%</div></div></div><div style="width:100%; cursor:pointer;" class="st-chart">${renderMiniSparkline(s.history, isUp, 44)}</div><div class="news-box" style="width:100%;"><div style="font-weight:600; margin-bottom:4px;">📰 每日消息汇总 (${(s.news || []).length}条)</div>${newsItems || '<div class="sub-text">暂无快讯</div>'}</div>`;
+    div.innerHTML = `<div style="display:flex; justify-content:space-between; width:100%; align-items:center; cursor:pointer;" class="st-head"><div><strong>${s.name}</strong> <span class="badge">${s.market || '全球'}</span><div class="sub-text">${s.symbol} · 点开看交互大图</div></div><div style="text-align:right;"><div style="font-size:16px; font-weight:700;">${s.price}</div><div class="${isUp ? 'up' : 'down'}" style="font-size:12px;">${isUp ? '+' : ''}${s.changePct}%</div></div></div><div style="width:100%; cursor:pointer;" class="st-chart">${renderMiniSparkline(s.history, isUp, 44)}</div><div class="news-box" style="width:100%;"><div style="font-weight:600; margin-bottom:4px;">📰 每日消息汇总 (${(s.news || []).length}条)</div>${newsItems || '<div class="sub-text">暂无快讯</div>'}</div>`;
     div.querySelector('.st-head').onclick = () => openStockDetailModal(s);
     div.querySelector('.st-chart').onclick = () => openStockDetailModal(s);
     list.appendChild(div);
@@ -1642,7 +1247,7 @@ function mapEastMoneyToSymbol(item) {
 async function liveSearchGlobalStock(query) {
   const q = query.trim(), resBox = document.getElementById('liveSearchResult');
   if (!q) { resBox.innerHTML = ''; return; }
-  resBox.innerHTML = '<div class="card" style="background:var(--primary-light);">🔍 正在全网检索 A股 / 港股 / 美股 / 全球个股与板块...</div>';
+  resBox.innerHTML = '<div class="card" style="background:var(--primary-light);">🔍 正在全网检索 A股 / 港股 / 美股 / 全球个股...</div>';
   const candidates = [], seen = new Set();
   const pushCand = (c) => { if (c.symbol && !seen.has(c.symbol.toUpperCase())) { seen.add(c.symbol.toUpperCase()); candidates.push(c); } };
   try {
@@ -1666,12 +1271,10 @@ async function liveSearchGlobalStock(query) {
       try {
         const chartInfo = await fetchSmartChart(cand, '1mo', '1d'); let newsList = [];
         try {
-          const xmlText = await httpGetText(`https://news.google.com/rss/search?q=${encodeURIComponent(cand.name + ' 股价 新闻')}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`);
-          const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
-          newsList = Array.from(doc.querySelectorAll('item')).slice(0, 6).map(it => ({ title: it.querySelector('title')?.textContent || '', source: it.querySelector('source')?.textContent || '财经资讯', time: (it.querySelector('pubDate')?.textContent || '').slice(0, 22), link: it.querySelector('link')?.textContent || '#' }));
+          const doc = new DOMParser().parseFromString(await httpGetText(`https://news.google.com/rss/search?q=${encodeURIComponent(cand.name + ' 股价 新闻')}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`), 'text/xml');
+          newsList = Array.from(doc.querySelectorAll('item')).slice(0, 6).map(it => ({ title: it.querySelector('title')?.textContent || '', source: it.querySelector('source')?.textContent || '财经', time: (it.querySelector('pubDate')?.textContent || '').slice(0, 22), link: it.querySelector('link')?.textContent || '#' }));
         } catch {}
-        const fullStock = { ...cand, ...chartInfo, news: newsList };
-        openStockDetailModal(fullStock);
+        const fullStock = { ...cand, ...chartInfo, news: newsList }; openStockDetailModal(fullStock);
         customWatchlist = [fullStock, ...customWatchlist.filter(x => x.symbol !== fullStock.symbol)].slice(0, 12);
         localStorage.setItem('custom_watchlist_v1', JSON.stringify(customWatchlist)); renderStocks('');
       } catch (err) { alert('拉取走势失败：' + err.message); }
@@ -1704,7 +1307,7 @@ document.getElementById('configRepoBtn').addEventListener('click', () => {
   if (val && val.trim()) { localStorage.setItem('github_stock_repo', val.trim()); fetchMarketData(true); }
 });
 
-// ==================== 9. 词典级翻译 + 零位移双击跳译 + Umi-OCR 双模识图翻译 ====================
+// ==================== 8. 词典级翻译 + 彻底修复例句双击跳译 + 网页 OCR 识图翻译 ====================
 let transHistory = JSON.parse(localStorage.getItem('trans_hist_v1') || '[]');
 let lastSrcText = '', lastSrcLang = 'en', lastTransResult = '', lastDstLang = 'zh-CN', translateReqSeq = 0;
 
@@ -1788,10 +1391,10 @@ function renderRichDictBox(rich) {
   }
   if (rich.examples.length) {
     const eDiv = document.createElement('div'); eDiv.className = 'dict-sec';
-    eDiv.innerHTML = `<div class="dict-sec-title">💬 双语例句（👆 双击任意英文单词直接跳译）</div>`;
+    eDiv.innerHTML = `<div class="dict-sec-title">💬 双语例句（👆 连续点两下任意英文单词直接跳译）</div>`;
     rich.examples.forEach(ex => {
       const item = document.createElement('div'); item.className = 'example-item';
-      item.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;"><div style="flex:1;">${wrapDoubleTapWords(ex.en)}</div><button class="btn btn-sm btn-outline ex-speak" title="朗读例句">🔊</button></div>${ex.zh ? `<div class="sub-text">${ex.zh}</div>` : ''}`;
+      item.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;"><div class="ex-sentence" style="flex:1;">${wrapDoubleTapWords(ex.en)}</div><button class="btn btn-sm btn-outline ex-speak" title="朗读例句">🔊</button></div>${ex.zh ? `<div class="sub-text">${ex.zh}</div>` : ''}`;
       item.querySelector('.ex-speak').onclick = () => speakSingle(decodeHtmlEntities(ex.en), 'en');
       eDiv.appendChild(item);
     });
@@ -1799,42 +1402,83 @@ function renderRichDictBox(rich) {
   }
 }
 
-let primedWordEl = null, primedWordText = '', primedWordTime = 0, primedClearTimer = null;
-let wordTouchStartX = 0, wordTouchStartY = 0, wordTouchStartScrollY = 0, lastTouchWordTime = 0, lastWordJumpAt = 0;
-function findTapWord(target) { const el = target instanceof Element ? target : target?.parentElement; return el ? el.closest('.tap-word') : null; }
-function clearPrimedWord() { if (primedClearTimer) { clearTimeout(primedClearTimer); primedClearTimer = null; } if (primedWordEl) primedWordEl.classList.remove('primed'); primedWordEl = null; primedWordText = ''; primedWordTime = 0; }
+// 彻底稳定的例句单词双击跳译（单 click 通道 + 18px 邻近词容错吸附 + 1.4s 窗口）
+let primedWordEl = null, primedWordText = '', primedWordTime = 0, primedClearTimer = null, lastWordJumpAt = 0;
+
+function clearPrimedWord() {
+  if (primedClearTimer) { clearTimeout(primedClearTimer); primedClearTimer = null; }
+  if (primedWordEl) primedWordEl.classList.remove('primed');
+  primedWordEl = null; primedWordText = ''; primedWordTime = 0;
+}
+
+function findTapWordTolerant(evt) {
+  const el = evt.target instanceof Element ? evt.target : evt.target?.parentElement;
+  if (!el || el.closest('.ex-speak, .phrase-chip, button')) return null;
+  const direct = el.closest('.tap-word');
+  if (direct) return direct;
+  const sent = el.closest('.ex-sentence');
+  if (!sent) return null;
+  let best = null, bestDist = 18;
+  sent.querySelectorAll('.tap-word').forEach(w => {
+    const r = w.getBoundingClientRect();
+    const dx = Math.max(r.left - evt.clientX, 0, evt.clientX - r.right);
+    const dy = Math.max(r.top - evt.clientY, 0, evt.clientY - r.bottom);
+    const dist = Math.hypot(dx, dy);
+    if (dist < bestDist) { bestDist = dist; best = w; }
+  });
+  return best;
+}
+
 function jumpTranslateWord(wordEl) {
   const w = (wordEl?.dataset?.word || wordEl?.textContent || '').trim().replace(/^['"-]+|['"-]+$/g, '');
   if (!w) return;
-  lastWordJumpAt = Date.now(); clearPrimedWord();
-  wordEl.classList.add('flash'); setTimeout(() => wordEl.classList.remove('flash'), 260);
+  lastWordJumpAt = Date.now();
+  clearPrimedWord();
+  wordEl.classList.add('flash');
+  setTimeout(() => wordEl.classList.remove('flash'), 240);
   if (navigator.vibrate) navigator.vibrate(18);
   showToast(`🔍 正在跳转翻译「${w}」`, 1600);
-  document.getElementById('transInput').value = w; document.getElementById('transFrom').value = 'en'; document.getElementById('transTo').value = 'zh-CN';
+  document.getElementById('transInput').value = w;
+  document.getElementById('transFrom').value = 'en';
+  document.getElementById('transTo').value = 'zh-CN';
   window.scrollTo({ top: 0, behavior: 'smooth' });
   const outEl = document.getElementById('transOutput');
-  if (outEl) { outEl.classList.remove('jump-pulse'); requestAnimationFrame(() => outEl.classList.add('jump-pulse')); setTimeout(() => outEl.classList.remove('jump-pulse'), 650); }
+  if (outEl) {
+    outEl.classList.remove('jump-pulse');
+    requestAnimationFrame(() => outEl.classList.add('jump-pulse'));
+    setTimeout(() => outEl.classList.remove('jump-pulse'), 650);
+  }
   doTranslate(false);
 }
-function handleTapWordActivation(span, evt) {
-  const w = (span?.dataset?.word || span?.textContent || '').trim().replace(/^['"-]+|['"-]+$/g, '');
-  if (!w) return;
-  const now = Date.now(); if (now - lastWordJumpAt < 400) return;
-  const isSame = (span === primedWordEl) || (primedWordText && w.toLowerCase() === primedWordText.toLowerCase());
-  if (isSame && now - primedWordTime < 750) { if (evt && evt.cancelable) evt.preventDefault(); jumpTranslateWord(span); }
-  else { clearPrimedWord(); primedWordEl = span; primedWordText = w; primedWordTime = now; span.classList.add('primed'); showToast(`👆 再点一下「${w}」跳转查词`, 1100); primedClearTimer = setTimeout(() => { if (primedWordEl === span) clearPrimedWord(); }, 780); }
-}
+
 const dictRichBoxEl = document.getElementById('dictRichBox');
-dictRichBoxEl.addEventListener('touchstart', (e) => { if (e.touches[0]) { wordTouchStartX = e.touches[0].clientX; wordTouchStartY = e.touches[0].clientY; wordTouchStartScrollY = window.scrollY; } }, { passive: true });
-dictRichBoxEl.addEventListener('touchend', (e) => {
-  const span = findTapWord(e.target); if (!span) return;
-  const t = e.changedTouches[0];
-  if (t && Math.hypot(t.clientX - wordTouchStartX, t.clientY - wordTouchStartY) > 28) return;
-  if (Math.abs(window.scrollY - wordTouchStartScrollY) > 10) return;
-  lastTouchWordTime = Date.now(); handleTapWordActivation(span, e);
-}, { passive: false });
-dictRichBoxEl.addEventListener('click', (e) => { if (Date.now() - lastTouchWordTime < 450) return; const span = findTapWord(e.target); if (span) handleTapWordActivation(span, e); });
-dictRichBoxEl.addEventListener('dblclick', (e) => { if (Date.now() - lastWordJumpAt < 400) return; const span = findTapWord(e.target); if (span) { e.preventDefault(); jumpTranslateWord(span); } });
+dictRichBoxEl.addEventListener('click', (e) => {
+  const span = findTapWordTolerant(e);
+  if (!span) return;
+  const w = (span.dataset.word || span.textContent || '').trim().replace(/^['"-]+|['"-]+$/g, '');
+  if (!w) return;
+  const now = Date.now();
+  if (now - lastWordJumpAt < 350) return;
+
+  const isSame = (span === primedWordEl) || (primedWordText && w.toLowerCase() === primedWordText.toLowerCase());
+  if (isSame && now - primedWordTime < 1400) {
+    jumpTranslateWord(span);
+  } else {
+    clearPrimedWord();
+    primedWordEl = span;
+    primedWordText = w;
+    primedWordTime = now;
+    span.classList.add('primed');
+    showToast(`👆 再点一下「${w}」跳转查词`, 1300);
+    primedClearTimer = setTimeout(() => { if (primedWordEl === span) clearPrimedWord(); }, 1450);
+  }
+});
+
+dictRichBoxEl.addEventListener('dblclick', (e) => {
+  if (Date.now() - lastWordJumpAt < 350) return;
+  const span = findTapWordTolerant(e);
+  if (span) { e.preventDefault(); jumpTranslateWord(span); }
+});
 
 async function speakSingle(text, lang) {
   if (!text) return;
@@ -1893,15 +1537,15 @@ document.getElementById('clearTransHistBtn').addEventListener('click', () => { t
 
 async function runOcrAndTranslate(fileRecord) {
   const outEl = document.getElementById('transOutput');
-  outEl.textContent = umiOcrConfig.mode === 'local' ? '⚡ 本机内置 RapidOCR 离线识别中...' : `🌐 远程 Umi-OCR 识别中 (${umiOcrConfig.serverUrl})...`;
+  outEl.textContent = '🌐 正在通过免费网页 OCR 识别图中文字...';
   try {
-    const txt = await extractTextViaUmiOcr(fileRecord, (m) => { outEl.textContent = m; });
+    const txt = await extractTextWithOcr(fileRecord, {
+      NativeTools, isNative: Capacitor.isNativePlatform(),
+      onProgress: (m) => { outEl.textContent = m; }
+    });
     if (txt && txt.trim()) { document.getElementById('transInput').value = txt.trim(); await doTranslate(false); }
     else { outEl.textContent = '未在图中检测到文字。'; showToast('未识别到文字'); }
-  } catch (e) {
-    outEl.textContent = '译文将显示在这里...';
-    showUmiOcrErrorModal(e.message);
-  }
+  } catch (e) { outEl.textContent = '译文将显示在这里...'; showOcrErrorModal(e.message); }
 }
 document.getElementById('ocrTranslateBtn').addEventListener('click', async () => {
   try {
@@ -1910,7 +1554,19 @@ document.getElementById('ocrTranslateBtn').addEventListener('click', async () =>
   } catch (e) { if (!String(e.message).includes('取消')) alert('识图翻译失败：' + e.message); }
 });
 
-// ==================== 10. 启动初始化 & 每次进App自动更新 ====================
+// ==================== 9. 启动初始化 & 模块联动 ====================
+function buildPandaContextSummary() {
+  const lines = [];
+  const { currentWeek, todayCourses } = getTodayCoursesSummary();
+  lines.push(`当前学期第 ${currentWeek} 周，今日(${DAYS_LABEL[new Date().getDay()]})排课：${todayCourses.length ? todayCourses.map(c => `${c.start}-${c.end}《${c.name}》${c.room || ''}`).join('；') : '无课'}`);
+  const up = getUpcomingExamSummary().slice(0, 5);
+  if (up.length) lines.push(`近期考试/日程：${up.map(e => `${e.type}《${e.name}》(${e.datetime.replace('T', ' ')})`).join('；')}`);
+  const desc = document.getElementById('weatherDesc')?.textContent || '';
+  const temp = document.getElementById('weatherTemp')?.textContent || '';
+  if (desc && temp && temp !== '--°C') lines.push(`当前天气：${desc} ${temp}`);
+  return lines.join('\n');
+}
+
 let lastAutoSyncTime = 0;
 async function autoSyncOnAppEnter() {
   lastAutoSyncTime = Date.now();
@@ -1921,14 +1577,20 @@ document.addEventListener('visibilitychange', () => {
 });
 
 (async function bootstrap() {
+  initSchedulePro({
+    showToast, openModal, closeModal,
+    scheduleAppReminder, cancelReminder,
+    syncToDeviceAlarm, syncToDeviceCalendar,
+    makeSafeNotifId, pickAndSmartRecognize,
+    onDataChanged: () => { const c = getActiveCity(); const w = c && weatherCache[c.id]; if (c && w) buildSmartAdvice(c, null, w.temp, w.precip, w.code); }
+  });
+  initPandaPet({ getContextSummary: buildPandaContextSummary, showToast, openModal, closeModal });
+
   applyAppearance();
   updateNavIndicatorPosition(0);
   updateLiveClock();
   setInterval(updateLiveClock, 1000);
   await initNotificationChannels();
-  renderDayTabs();
-  renderCourses();
-  renderExams();
   renderFiles();
   renderMfSourceTabs();
   renderTracks();
