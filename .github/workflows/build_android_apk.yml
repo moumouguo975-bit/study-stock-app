@@ -31,11 +31,12 @@ jobs:
           npm install
           npm run build
 
-      - name: Generate Android project & inject MusicService + NativeTools (Umi-OCR Bridge)
+      - name: Generate Android project & inject MusicService + RapidOCR/Umi-OCR Dual Engine
         run: |
           npx cap add android
           python3 - << 'EOF'
           import os
+          import re
           import wave
           import struct
           import math
@@ -62,10 +63,38 @@ jobs:
                   frames += struct.pack("<h", val)
               wf.writeframes(frames)
 
-          # 2. 写入安卓权限、开启明文HTTP(供局域网Umi-OCR直连) & 注册后台媒体前台服务 MusicService
+          # 2. 设置 minSdkVersion = 29（RapidOCR4j-Android 要求 minSdk >= 29）
+          vars_path = "android/variables.gradle"
+          if os.path.exists(vars_path):
+              with open(vars_path, "r", encoding="utf-8") as f:
+                  vg = f.read()
+              vg = re.sub(r"minSdkVersion\s*=\s*\d+", "minSdkVersion = 29", vg)
+              with open(vars_path, "w", encoding="utf-8") as f:
+                  f.write(vg)
+
+          # 3. 注入 RapidOCR4j-Android（Umi-OCR 同源 RapidOCR / PP-OCR 离线引擎）并精简真机 ABI
+          gradle_path = "android/app/build.gradle"
+          with open(gradle_path, "r", encoding="utf-8") as f:
+              gradle = f.read()
+          dep = "    implementation 'io.github.hzkitty:rapidocr4j-android:1.0.0'\n"
+          if "rapidocr4j-android" not in gradle:
+              gradle = gradle.replace("dependencies {\n", "dependencies {\n" + dep, 1)
+          abi_block = "        ndk {\n            abiFilters 'arm64-v8a', 'armeabi-v7a'\n        }\n"
+          if "abiFilters" not in gradle and "defaultConfig {\n" in gradle:
+              gradle = gradle.replace("defaultConfig {\n", "defaultConfig {\n" + abi_block, 1)
+          with open(gradle_path, "w", encoding="utf-8") as f:
+              f.write(gradle)
+
+          # 4. 写入权限、tools:replace="android:theme"、明文HTTP与前台音乐服务
           manifest_path = "android/app/src/main/AndroidManifest.xml"
           with open(manifest_path, "r", encoding="utf-8") as f:
               xml = f.read()
+          if "xmlns:tools" not in xml:
+              xml = xml.replace(
+                  'xmlns:android="http://schemas.android.com/apk/res/android"',
+                  'xmlns:android="http://schemas.android.com/apk/res/android"\n    xmlns:tools="http://schemas.android.com/tools"',
+                  1
+              )
           perms = """
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
               <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
@@ -82,7 +111,9 @@ jobs:
           if "FOREGROUND_SERVICE_MEDIA_PLAYBACK" not in xml:
               xml = xml.replace("<application", perms + "\n    <application", 1)
           if "usesCleartextTraffic" not in xml:
-              xml = xml.replace("<application", '<application android:usesCleartextTraffic="true"', 1)
+              xml = xml.replace("<application", '<application android:usesCleartextTraffic="true" tools:replace="android:theme"', 1)
+          elif "tools:replace" not in xml:
+              xml = xml.replace("<application", '<application tools:replace="android:theme"', 1)
           service_decl = """
               <service
                   android:name=".MusicService"
@@ -97,7 +128,7 @@ jobs:
           java_dir = "android/app/src/main/java/com/personal/studyhub"
           os.makedirs(java_dir, exist_ok=True)
 
-          # 3. 零占用后台音乐服务 MusicService.java（支持 content:// 直读 & MusicFree 自定义 Headers 流媒体）
+          # 5. MusicService.java（零拷贝直读 + MusicFree 自定义 Headers 流媒体）
           music_service_code = textwrap.dedent(r'''
               package com.personal.studyhub;
 
@@ -310,9 +341,7 @@ jobs:
                   }
 
                   public synchronized void applyEq(int bass, int mid, int treble) {
-                      eqBass = bass;
-                      eqMid = mid;
-                      eqTreble = treble;
+                      eqBass = bass; eqMid = mid; eqTreble = treble;
                       try {
                           if (equalizer != null) {
                               short numBands = equalizer.getNumberOfBands();
@@ -343,33 +372,14 @@ jobs:
                       } catch (Exception ignored) {}
                   }
 
-                  public synchronized void pause() {
-                      if (player != null && isPrepared && player.isPlaying()) {
-                          player.pause();
-                          updateNotification(getCurrentTitle(), "已暂停");
-                      }
-                  }
-
-                  public synchronized void resume() {
-                      if (player != null && isPrepared && !player.isPlaying()) {
-                          player.start();
-                          updateNotification(getCurrentTitle(), "正在后台流畅播放");
-                      }
-                  }
-
-                  public synchronized void seekTo(int ms) {
-                      if (player != null && isPrepared) player.seekTo(ms);
-                  }
-
+                  public synchronized void pause() { if (player != null && isPrepared && player.isPlaying()) { player.pause(); updateNotification(getCurrentTitle(), "已暂停"); } }
+                  public synchronized void resume() { if (player != null && isPrepared && !player.isPlaying()) { player.start(); updateNotification(getCurrentTitle(), "正在后台流畅播放"); } }
+                  public synchronized void seekTo(int ms) { if (player != null && isPrepared) player.seekTo(ms); }
                   public synchronized boolean isPlaying() { return player != null && isPrepared && player.isPlaying(); }
                   public synchronized int getCurrentMs() { return (player != null && isPrepared) ? player.getCurrentPosition() : 0; }
                   public synchronized int getDurationMs() { return (player != null && isPrepared) ? player.getDuration() : 0; }
-                  public synchronized String getCurrentTitle() {
-                      return (currentIndex >= 0 && currentIndex < titles.size()) ? titles.get(currentIndex) : "";
-                  }
-                  public synchronized String getCurrentFormat() {
-                      return (currentIndex >= 0 && currentIndex < formats.size()) ? formats.get(currentIndex) : "AUDIO";
-                  }
+                  public synchronized String getCurrentTitle() { return (currentIndex >= 0 && currentIndex < titles.size()) ? titles.get(currentIndex) : ""; }
+                  public synchronized String getCurrentFormat() { return (currentIndex >= 0 && currentIndex < formats.size()) ? formats.get(currentIndex) : "AUDIO"; }
 
                   private void releasePlayer() {
                       isPrepared = false;
@@ -379,12 +389,7 @@ jobs:
                   }
 
                   @Override
-                  public void onDestroy() {
-                      releasePlayer();
-                      instance = null;
-                      super.onDestroy();
-                  }
-
+                  public void onDestroy() { releasePlayer(); instance = null; super.onDestroy(); }
                   @Override
                   public IBinder onBind(Intent intent) { return null; }
               }
@@ -393,7 +398,7 @@ jobs:
           with open(os.path.join(java_dir, "MusicService.java"), "w", encoding="utf-8") as f:
               f.write(music_service_code)
 
-          # 4. NativeToolsPlugin.java（零拷贝音频 + MusicFree Headers + Umi-OCR 图像/PDF Base64 桥接 + 定位/TTS/闹钟/日历）
+          # 6. NativeToolsPlugin.java（内置 RapidOCR 离线识别 + 远程 Umi-OCR Base64 双模 + 零拷贝音乐 + TTS/闹钟/日历）
           plugin_code = textwrap.dedent(r'''
               package com.personal.studyhub;
 
@@ -428,6 +433,8 @@ jobs:
               import com.getcapacitor.PluginMethod;
               import com.getcapacitor.annotation.ActivityCallback;
               import com.getcapacitor.annotation.CapacitorPlugin;
+              import io.github.hzkitty.RapidOCR;
+              import io.github.hzkitty.entity.OcrResult;
               import java.io.BufferedReader;
               import java.io.ByteArrayOutputStream;
               import java.io.File;
@@ -435,17 +442,79 @@ jobs:
               import java.io.FileOutputStream;
               import java.io.InputStream;
               import java.io.InputStreamReader;
+              import java.lang.reflect.Method;
               import java.nio.charset.StandardCharsets;
               import java.util.ArrayList;
+              import java.util.List;
               import java.util.Locale;
+              import java.util.concurrent.ExecutorService;
+              import java.util.concurrent.Executors;
               import java.util.zip.ZipEntry;
               import java.util.zip.ZipInputStream;
               import org.json.JSONException;
 
               @CapacitorPlugin(name = "NativeTools")
               public class NativeToolsPlugin extends Plugin {
+                  private static RapidOCR sharedRapidOcr = null;
+                  private static final Object OCR_LOCK = new Object();
+                  private final ExecutorService ocrExecutor = Executors.newSingleThreadExecutor();
                   private TextToSpeech tts;
                   private boolean ttsReady = false;
+
+                  private RapidOCR getOrInitRapidOcr() throws Exception {
+                      synchronized (OCR_LOCK) {
+                          if (sharedRapidOcr == null) {
+                              sharedRapidOcr = RapidOCR.create(getContext().getApplicationContext());
+                          }
+                          return sharedRapidOcr;
+                      }
+                  }
+
+                  private String parseOcrResultText(OcrResult res) {
+                      if (res == null) return "";
+                      try {
+                          Method m = res.getClass().getMethod("getStrRes");
+                          Object v = m.invoke(res);
+                          if (v != null && !String.valueOf(v).trim().isEmpty()) {
+                              return String.valueOf(v).trim();
+                          }
+                      } catch (Exception ignored) {}
+                      try {
+                          Method m = res.getClass().getMethod("getRecRes");
+                          Object listObj = m.invoke(res);
+                          if (listObj instanceof List) {
+                              StringBuilder sb = new StringBuilder();
+                              for (Object item : (List<?>) listObj) {
+                                  if (item == null) continue;
+                                  try {
+                                      Method gm = item.getClass().getMethod("getText");
+                                      Object t = gm.invoke(item);
+                                      if (t != null && !String.valueOf(t).trim().isEmpty()) {
+                                          sb.append(String.valueOf(t).trim()).append("\n");
+                                      }
+                                  } catch (Exception ignored2) {}
+                              }
+                              String out = sb.toString().trim();
+                              if (!out.isEmpty()) return out;
+                          }
+                      } catch (Exception ignored) {}
+                      return res.toString() != null ? res.toString().trim() : "";
+                  }
+
+                  @PluginMethod
+                  public void testLocalOcr(PluginCall call) {
+                      ocrExecutor.execute(() -> {
+                          try {
+                              getOrInitRapidOcr();
+                              JSObject ret = new JSObject();
+                              ret.put("ok", true);
+                              ret.put("engine", "RapidOCR4j-Android (Umi-OCR 同源 PP-OCR ONNX 离线引擎)");
+                              call.resolve(ret);
+                          } catch (Throwable e) {
+                              call.reject("本机 RapidOCR 引擎初始化失败: " + e.getMessage());
+                          }
+                      });
+                  }
 
                   private Locale mapLangToLocale(String lang) {
                       if ("en".equals(lang)) return Locale.US;
@@ -459,24 +528,18 @@ jobs:
                   }
 
                   private void withTtsReady(Runnable action, PluginCall call) {
-                      if (tts != null && ttsReady) {
-                          action.run();
-                      } else {
+                      if (tts != null && ttsReady) { action.run(); }
+                      else {
                           tts = new TextToSpeech(getContext(), status -> {
-                              if (status == TextToSpeech.SUCCESS) {
-                                  ttsReady = true;
-                                  action.run();
-                              } else {
-                                  call.reject("设备未安装语音朗读引擎");
-                              }
+                              if (status == TextToSpeech.SUCCESS) { ttsReady = true; action.run(); }
+                              else call.reject("设备未安装语音朗读引擎");
                           });
                       }
                   }
 
                   @PluginMethod
                   public void speakText(PluginCall call) {
-                      String text = call.getString("text", "");
-                      String lang = call.getString("lang", "zh-CN");
+                      String text = call.getString("text", ""), lang = call.getString("lang", "zh-CN");
                       if (text.isEmpty()) { call.resolve(); return; }
                       withTtsReady(() -> {
                           try {
@@ -490,24 +553,18 @@ jobs:
 
                   @PluginMethod
                   public void speakPair(PluginCall call) {
-                      String text1 = call.getString("text1", "");
-                      String lang1 = call.getString("lang1", "en");
-                      String text2 = call.getString("text2", "");
-                      String lang2 = call.getString("lang2", "zh-CN");
+                      String text1 = call.getString("text1", ""), lang1 = call.getString("lang1", "en");
+                      String text2 = call.getString("text2", ""), lang2 = call.getString("lang2", "zh-CN");
                       if (text1.isEmpty() && text2.isEmpty()) { call.resolve(); return; }
                       withTtsReady(() -> {
                           try {
                               tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
                                   @Override public void onStart(String id) {}
                                   @Override public void onError(String id) {}
-                                  @Override
-                                  public void onDone(String id) {
+                                  @Override public void onDone(String id) {
                                       if ("pair_1".equals(id) && !text2.isEmpty()) {
-                                          try {
-                                              Thread.sleep(220);
-                                              tts.setLanguage(mapLangToLocale(lang2));
-                                              tts.speak(text2, TextToSpeech.QUEUE_FLUSH, null, "pair_2");
-                                          } catch (Exception ignored) {}
+                                          try { Thread.sleep(220); tts.setLanguage(mapLangToLocale(lang2)); tts.speak(text2, TextToSpeech.QUEUE_FLUSH, null, "pair_2"); }
+                                          catch (Exception ignored) {}
                                       }
                                   }
                               });
@@ -523,30 +580,19 @@ jobs:
                       try {
                           boolean hasCoarse = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
                           boolean hasFine = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
-                          if (!hasCoarse && !hasFine) {
-                              call.reject("未授予设备定位权限");
-                              return;
-                          }
+                          if (!hasCoarse && !hasFine) { call.reject("未授予设备定位权限"); return; }
                           LocationManager lm = (LocationManager) getContext().getSystemService(android.content.Context.LOCATION_SERVICE);
                           if (lm == null) { call.reject("无定位服务"); return; }
                           Location loc = null;
                           for (String provider : lm.getProviders(true)) {
                               Location l = lm.getLastKnownLocation(provider);
-                              if (l != null && (loc == null || l.getAccuracy() < loc.getAccuracy())) {
-                                  loc = l;
-                              }
+                              if (l != null && (loc == null || l.getAccuracy() < loc.getAccuracy())) loc = l;
                           }
                           if (loc == null) { call.reject("暂无缓存定位"); return; }
-                          JSObject ret = new JSObject();
-                          ret.put("lat", loc.getLatitude());
-                          ret.put("lon", loc.getLongitude());
-                          call.resolve(ret);
-                      } catch (Exception e) {
-                          call.reject(e.getMessage());
-                      }
+                          JSObject ret = new JSObject(); ret.put("lat", loc.getLatitude()); ret.put("lon", loc.getLongitude()); call.resolve(ret);
+                      } catch (Exception e) { call.reject(e.getMessage()); }
                   }
 
-                  // 零拷贝音频选择器：只获取持久化 URI 权限，绝不复制文件、0 字节额外存储
                   @PluginMethod
                   public void pickAudioRefs(PluginCall call) {
                       Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -560,55 +606,32 @@ jobs:
                   @ActivityCallback
                   private void onPickAudioRefsResult(PluginCall call, ActivityResult result) {
                       if (call == null) return;
-                      if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
-                          call.reject("已取消选择");
-                          return;
-                      }
+                      if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) { call.reject("已取消选择"); return; }
                       Intent data = result.getData();
                       ArrayList<Uri> uris = new ArrayList<>();
                       ClipData clip = data.getClipData();
-                      if (clip != null) {
-                          for (int i = 0; i < clip.getItemCount(); i++) uris.add(clip.getItemAt(i).getUri());
-                      } else if (data.getData() != null) {
-                          uris.add(data.getData());
-                      }
+                      if (clip != null) { for (int i = 0; i < clip.getItemCount(); i++) uris.add(clip.getItemAt(i).getUri()); }
+                      else if (data.getData() != null) uris.add(data.getData());
 
                       JSArray arr = new JSArray();
                       for (Uri uri : uris) {
                           try {
-                              try {
-                                  getContext().getContentResolver().takePersistableUriPermission(
-                                      uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                  );
-                              } catch (Exception ignored) {}
-
+                              try { getContext().getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) {}
                               String name = queryDisplayName(uri);
                               long size = queryFileSize(uri);
                               String mime = getContext().getContentResolver().getType(uri);
                               if (mime == null) mime = "audio/mpeg";
                               String ext = "";
                               int dot = name.lastIndexOf('.');
-                              if (dot > 0 && dot < name.length() - 1) {
-                                  ext = name.substring(dot + 1).toLowerCase(Locale.ROOT);
-                              } else {
-                                  String g = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime);
-                                  if (g != null) ext = g.toLowerCase(Locale.ROOT);
-                              }
-
+                              if (dot > 0 && dot < name.length() - 1) ext = name.substring(dot + 1).toLowerCase(Locale.ROOT);
+                              else { String g = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime); if (g != null) ext = g.toLowerCase(Locale.ROOT); }
                               JSObject obj = new JSObject();
-                              obj.put("name", name);
-                              obj.put("format", ext.isEmpty() ? "AUDIO" : ext.toUpperCase(Locale.ROOT));
-                              obj.put("mime", mime);
-                              obj.put("size", size);
-                              obj.put("uri", uri.toString());
+                              obj.put("name", name); obj.put("format", ext.isEmpty() ? "AUDIO" : ext.toUpperCase(Locale.ROOT));
+                              obj.put("mime", mime); obj.put("size", size); obj.put("uri", uri.toString());
                               arr.put(obj);
-                          } catch (Exception e) {
-                              e.printStackTrace();
-                          }
+                          } catch (Exception e) { e.printStackTrace(); }
                       }
-                      JSObject ret = new JSObject();
-                      ret.put("files", arr);
-                      call.resolve(ret);
+                      JSObject ret = new JSObject(); ret.put("files", arr); call.resolve(ret);
                   }
 
                   @PluginMethod
@@ -621,67 +644,35 @@ jobs:
                           MusicService.eqBass = call.getInt("bass", 0);
                           MusicService.eqMid = call.getInt("mid", 0);
                           MusicService.eqTreble = call.getInt("treble", 0);
-
                           Intent intent = new Intent(getContext(), MusicService.class);
                           intent.setAction("ACTION_PLAY_LIST");
                           ContextCompat.startForegroundService(getContext(), intent);
                           call.resolve();
-                      } catch (Exception e) {
-                          call.reject(e.getMessage());
-                      }
+                      } catch (Exception e) { call.reject(e.getMessage()); }
                   }
 
                   @PluginMethod
                   public void audioUpdatePlaylist(PluginCall call) {
-                      try {
-                          updateStaticLists(call);
-                          call.resolve();
-                      } catch (Exception e) {
-                          call.reject(e.getMessage());
-                      }
+                      try { updateStaticLists(call); call.resolve(); } catch (Exception e) { call.reject(e.getMessage()); }
                   }
 
                   private void updateStaticLists(PluginCall call) throws JSONException {
-                      JSArray pArr = call.getArray("paths");
-                      JSArray tArr = call.getArray("titles");
-                      JSArray fArr = call.getArray("formats");
-                      JSArray hArr = call.getArray("headers");
-                      ArrayList<String> ps = new ArrayList<>();
-                      ArrayList<String> ts = new ArrayList<>();
-                      ArrayList<String> fs = new ArrayList<>();
-                      ArrayList<String> hs = new ArrayList<>();
+                      JSArray pArr = call.getArray("paths"), tArr = call.getArray("titles"), fArr = call.getArray("formats"), hArr = call.getArray("headers");
+                      ArrayList<String> ps = new ArrayList<>(), ts = new ArrayList<>(), fs = new ArrayList<>(), hs = new ArrayList<>();
                       if (pArr != null) for (int i = 0; i < pArr.length(); i++) ps.add(pArr.getString(i));
                       if (tArr != null) for (int i = 0; i < tArr.length(); i++) ts.add(tArr.getString(i));
                       if (fArr != null) for (int i = 0; i < fArr.length(); i++) fs.add(fArr.getString(i));
                       if (hArr != null) for (int i = 0; i < hArr.length(); i++) hs.add(hArr.optString(i, "{}"));
-                      MusicService.paths = ps;
-                      MusicService.titles = ts;
-                      MusicService.formats = fs;
-                      MusicService.headersList = hs;
+                      MusicService.paths = ps; MusicService.titles = ts; MusicService.formats = fs; MusicService.headersList = hs;
                   }
 
                   @PluginMethod public void audioPause(PluginCall call) { if (MusicService.instance != null) MusicService.instance.pause(); call.resolve(); }
                   @PluginMethod public void audioResume(PluginCall call) { if (MusicService.instance != null) MusicService.instance.resume(); call.resolve(); }
                   @PluginMethod public void audioSeek(PluginCall call) { if (MusicService.instance != null) MusicService.instance.seekTo(call.getInt("positionMs", 0)); call.resolve(); }
-                  @PluginMethod public void audioSetSpeed(PluginCall call) {
-                      float sp = call.getFloat("speed", 1.0f);
-                      MusicService.playSpeed = sp;
-                      if (MusicService.instance != null) MusicService.instance.applySpeed(sp);
-                      call.resolve();
-                  }
+                  @PluginMethod public void audioSetSpeed(PluginCall call) { float sp = call.getFloat("speed", 1.0f); MusicService.playSpeed = sp; if (MusicService.instance != null) MusicService.instance.applySpeed(sp); call.resolve(); }
                   @PluginMethod public void audioSetLoopMode(PluginCall call) { MusicService.loopMode = call.getString("loopMode", "list"); call.resolve(); }
-                  @PluginMethod public void audioSetEq(PluginCall call) {
-                      int b = call.getInt("bass", 0), m = call.getInt("mid", 0), t = call.getInt("treble", 0);
-                      MusicService.eqBass = b; MusicService.eqMid = m; MusicService.eqTreble = t;
-                      if (MusicService.instance != null) MusicService.instance.applyEq(b, m, t);
-                      call.resolve();
-                  }
-                  @PluginMethod public void audioStop(PluginCall call) {
-                      Intent i = new Intent(getContext(), MusicService.class);
-                      i.setAction("ACTION_STOP_ALL");
-                      getContext().startService(i);
-                      call.resolve();
-                  }
+                  @PluginMethod public void audioSetEq(PluginCall call) { int b = call.getInt("bass", 0), m = call.getInt("mid", 0), t = call.getInt("treble", 0); MusicService.eqBass = b; MusicService.eqMid = m; MusicService.eqTreble = t; if (MusicService.instance != null) MusicService.instance.applyEq(b, m, t); call.resolve(); }
+                  @PluginMethod public void audioStop(PluginCall call) { Intent i = new Intent(getContext(), MusicService.class); i.setAction("ACTION_STOP_ALL"); getContext().startService(i); call.resolve(); }
                   @PluginMethod public void setKeepAlive(PluginCall call) {
                       boolean active = Boolean.TRUE.equals(call.getBoolean("active", false));
                       MusicService.keepAliveTitle = call.getString("title", "白噪音");
@@ -702,7 +693,6 @@ jobs:
                       call.resolve(ret);
                   }
 
-                  // 图片/文档/JS插件导入
                   @PluginMethod
                   public void pickFiles(PluginCall call) {
                       Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -727,30 +717,21 @@ jobs:
                       JSArray arr = new JSArray();
                       for (Uri uri : uris) {
                           try {
-                              String name = queryDisplayName(uri);
-                              String mime = getContext().getContentResolver().getType(uri);
+                              String name = queryDisplayName(uri), mime = getContext().getContentResolver().getType(uri);
                               if (mime == null) mime = "application/octet-stream";
-                              String ext = "";
-                              int dot = name.lastIndexOf('.');
+                              String ext = ""; int dot = name.lastIndexOf('.');
                               if (dot > 0 && dot < name.length() - 1) ext = name.substring(dot + 1).toLowerCase(Locale.ROOT);
-                              else {
-                                  String g = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime);
-                                  if (g != null) { ext = g.toLowerCase(Locale.ROOT); name = name + "." + ext; }
-                              }
+                              else { String g = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime); if (g != null) { ext = g.toLowerCase(Locale.ROOT); name = name + "." + ext; } }
                               File dest = new File(dir, System.currentTimeMillis() + "_" + name.replaceAll("[^a-zA-Z0-9._-]", "_"));
                               long totalBytes = 0;
-                              try (InputStream in = getContext().getContentResolver().openInputStream(uri);
-                                   FileOutputStream out = new FileOutputStream(dest)) {
+                              try (InputStream in = getContext().getContentResolver().openInputStream(uri); FileOutputStream out = new FileOutputStream(dest)) {
                                   if (in == null) continue;
                                   byte[] buf = new byte[16384]; int len;
                                   while ((len = in.read(buf)) > 0) { out.write(buf, 0, len); totalBytes += len; }
                               }
                               JSObject obj = new JSObject();
-                              obj.put("name", name);
-                              obj.put("format", ext.isEmpty() ? "FILE" : ext.toUpperCase(Locale.ROOT));
-                              obj.put("mime", mime);
-                              obj.put("size", totalBytes);
-                              obj.put("localPath", dest.getAbsolutePath());
+                              obj.put("name", name); obj.put("format", ext.isEmpty() ? "FILE" : ext.toUpperCase(Locale.ROOT));
+                              obj.put("mime", mime); obj.put("size", totalBytes); obj.put("localPath", dest.getAbsolutePath());
                               arr.put(obj);
                           } catch (Exception e) { e.printStackTrace(); }
                       }
@@ -785,51 +766,93 @@ jobs:
                       call.resolve();
                   }
 
-                  // 纯文本与 Office XML 直解；图片/PDF 自动转为纯 Base64 图像数组交给 Umi-OCR 引擎识别
+                  // 双模 OCR：mode="local" 时直接用本机 RapidOCR（Umi-OCR 同源引擎）离线识别；mode="remote" 返回 Base64 供远程 Umi-OCR 识别
                   @PluginMethod
                   public void extractText(PluginCall call) {
                       String path = call.getString("localPath", "");
+                      String mode = call.getString("mode", "local");
                       int maxPages = call.getInt("maxPages", 3);
                       File file = new File(path);
                       if (path.isEmpty() || !file.exists()) { call.reject("文件不存在"); return; }
                       String lower = file.getName().toLowerCase(Locale.ROOT);
-                      try {
-                          if (lower.endsWith(".txt") || lower.endsWith(".csv") || lower.endsWith(".md") || lower.endsWith(".json") || lower.endsWith(".js")) {
-                              StringBuilder sb = new StringBuilder();
-                              try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
-                                  String line; while ((line = br.readLine()) != null) sb.append(line).append("\n");
+
+                      ocrExecutor.execute(() -> {
+                          try {
+                              if (lower.endsWith(".txt") || lower.endsWith(".csv") || lower.endsWith(".md") || lower.endsWith(".json") || lower.endsWith(".js")) {
+                                  StringBuilder sb = new StringBuilder();
+                                  try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+                                      String line; while ((line = br.readLine()) != null) sb.append(line).append("\n");
+                                  }
+                                  JSObject ret = new JSObject(); ret.put("text", sb.toString()); ret.put("needsOcr", false); call.resolve(ret); return;
                               }
-                              JSObject ret = new JSObject();
-                              ret.put("text", sb.toString());
-                              ret.put("needsOcr", false);
-                              call.resolve(ret);
-                              return;
+                              if (lower.endsWith(".docx") || lower.endsWith(".xlsx") || lower.endsWith(".pptx")) {
+                                  JSObject ret = new JSObject(); ret.put("text", extractOfficeXmlText(file)); ret.put("needsOcr", false); call.resolve(ret); return;
+                              }
+
+                              if ("remote".equals(mode)) {
+                                  JSArray imgs = lower.endsWith(".pdf")
+                                      ? renderPdfToBase64List(file, Math.max(1, Math.min(10, maxPages)))
+                                      : singleImageBase64Array(file);
+                                  JSObject ret = new JSObject(); ret.put("needsOcr", true); ret.put("images", imgs); call.resolve(ret); return;
+                              }
+
+                              // 本机离线 RapidOCR（Umi-OCR 同源引擎）直接识别图片或 PDF
+                              RapidOCR ocr = getOrInitRapidOcr();
+                              if (lower.endsWith(".pdf")) {
+                                  String pdfText = runLocalOcrOnPdf(ocr, file, Math.max(1, Math.min(10, maxPages)));
+                                  JSObject ret = new JSObject(); ret.put("text", pdfText); ret.put("needsOcr", false); ret.put("engine", "rapidocr-local"); call.resolve(ret); return;
+                              }
+                              Bitmap bmp = decodeScaledBitmap(file);
+                              if (bmp == null) { call.reject("无法解码该图片文件"); return; }
+                              try {
+                                  OcrResult ocrRes = ocr.run(bmp);
+                                  JSObject ret = new JSObject();
+                                  ret.put("text", parseOcrResultText(ocrRes));
+                                  ret.put("needsOcr", false);
+                                  ret.put("engine", "rapidocr-local");
+                                  call.resolve(ret);
+                              } finally {
+                                  bmp.recycle();
+                              }
+                          } catch (Throwable e) {
+                              call.reject("OCR 识别失败: " + e.getMessage());
                           }
-                          if (lower.endsWith(".docx") || lower.endsWith(".xlsx") || lower.endsWith(".pptx")) {
-                              JSObject ret = new JSObject();
-                              ret.put("text", extractOfficeXmlText(file));
-                              ret.put("needsOcr", false);
-                              call.resolve(ret);
-                              return;
+                      });
+                  }
+
+                  private Bitmap decodeScaledBitmap(File file) {
+                      BitmapFactory.Options bounds = new BitmapFactory.Options();
+                      bounds.inJustDecodeBounds = true;
+                      BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+                      int maxSide = Math.max(bounds.outWidth, bounds.outHeight);
+                      BitmapFactory.Options opts = new BitmapFactory.Options();
+                      int sample = 1;
+                      while (maxSide / sample > 2000) sample *= 2;
+                      opts.inSampleSize = sample;
+                      return BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
+                  }
+
+                  private String runLocalOcrOnPdf(RapidOCR ocr, File file, int maxPages) throws Exception {
+                      StringBuilder sb = new StringBuilder();
+                      ParcelFileDescriptor pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
+                      PdfRenderer renderer = new PdfRenderer(pfd);
+                      try {
+                          int count = Math.min(renderer.getPageCount(), maxPages);
+                          for (int i = 0; i < count; i++) {
+                              PdfRenderer.Page page = renderer.openPage(i);
+                              try {
+                                  float scale = Math.min(2.0f, 1800f / Math.max(1, Math.max(page.getWidth(), page.getHeight())));
+                                  Bitmap bmp = Bitmap.createBitmap(Math.max(1, Math.round(page.getWidth() * scale)), Math.max(1, Math.round(page.getHeight() * scale)), Bitmap.Config.ARGB_8888);
+                                  try {
+                                      Canvas canvas = new Canvas(bmp); canvas.drawColor(Color.WHITE);
+                                      page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                                      String part = parseOcrResultText(ocr.run(bmp));
+                                      if (!part.isEmpty()) sb.append(part).append("\n\n");
+                                  } finally { bmp.recycle(); }
+                              } finally { page.close(); }
                           }
-                          if (lower.endsWith(".pdf")) {
-                              JSArray imgs = renderPdfToBase64List(file, Math.max(1, Math.min(10, maxPages)));
-                              JSObject ret = new JSObject();
-                              ret.put("needsOcr", true);
-                              ret.put("images", imgs);
-                              call.resolve(ret);
-                              return;
-                          }
-                          String b64 = encodeImageFileToBase64(file);
-                          JSArray imgs = new JSArray();
-                          imgs.put(b64);
-                          JSObject ret = new JSObject();
-                          ret.put("needsOcr", true);
-                          ret.put("images", imgs);
-                          call.resolve(ret);
-                      } catch (Exception e) {
-                          call.reject("文件预处理失败: " + e.getMessage());
-                      }
+                      } finally { renderer.close(); pfd.close(); }
+                      return sb.toString().trim();
                   }
 
                   private String bitmapToBase64Jpeg(Bitmap bmp) {
@@ -838,22 +861,11 @@ jobs:
                       return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
                   }
 
-                  private String encodeImageFileToBase64(File file) throws Exception {
-                      BitmapFactory.Options bounds = new BitmapFactory.Options();
-                      bounds.inJustDecodeBounds = true;
-                      BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
-                      int maxSide = Math.max(bounds.outWidth, bounds.outHeight);
-                      BitmapFactory.Options opts = new BitmapFactory.Options();
-                      int sample = 1;
-                      while (maxSide / sample > 2200) sample *= 2;
-                      opts.inSampleSize = sample;
-                      Bitmap bmp = BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
-                      if (bmp == null) throw new Exception("无法解码该图片文件");
-                      try {
-                          return bitmapToBase64Jpeg(bmp);
-                      } finally {
-                          bmp.recycle();
-                      }
+                  private JSArray singleImageBase64Array(File file) throws Exception {
+                      Bitmap bmp = decodeScaledBitmap(file);
+                      if (bmp == null) throw new Exception("无法解码该图片");
+                      try { JSArray arr = new JSArray(); arr.put(bitmapToBase64Jpeg(bmp)); return arr; }
+                      finally { bmp.recycle(); }
                   }
 
                   private JSArray renderPdfToBase64List(File file, int maxPages) throws Exception {
@@ -862,30 +874,17 @@ jobs:
                       PdfRenderer renderer = new PdfRenderer(pfd);
                       try {
                           int count = Math.min(renderer.getPageCount(), maxPages);
-                          if (count <= 0) throw new Exception("PDF 文件为空");
+                          if (count <= 0) throw new Exception("PDF 为空");
                           for (int i = 0; i < count; i++) {
                               PdfRenderer.Page page = renderer.openPage(i);
                               try {
                                   float scale = Math.min(2.0f, 1800f / Math.max(1, Math.max(page.getWidth(), page.getHeight())));
-                                  int w = Math.max(1, Math.round(page.getWidth() * scale));
-                                  int h = Math.max(1, Math.round(page.getHeight() * scale));
-                                  Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                                  try {
-                                      Canvas canvas = new Canvas(bmp);
-                                      canvas.drawColor(Color.WHITE);
-                                      page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
-                                      arr.put(bitmapToBase64Jpeg(bmp));
-                                  } finally {
-                                      bmp.recycle();
-                                  }
-                              } finally {
-                                  page.close();
-                              }
+                                  Bitmap bmp = Bitmap.createBitmap(Math.max(1, Math.round(page.getWidth() * scale)), Math.max(1, Math.round(page.getHeight() * scale)), Bitmap.Config.ARGB_8888);
+                                  try { Canvas canvas = new Canvas(bmp); canvas.drawColor(Color.WHITE); page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY); arr.put(bitmapToBase64Jpeg(bmp)); }
+                                  finally { bmp.recycle(); }
+                              } finally { page.close(); }
                           }
-                      } finally {
-                          renderer.close();
-                          pfd.close();
-                      }
+                      } finally { renderer.close(); pfd.close(); }
                       return arr;
                   }
 
@@ -913,11 +912,9 @@ jobs:
                       Integer hour = call.getInt("hour"), minute = call.getInt("minute");
                       if (hour == null || minute == null) { call.reject("缺少时间"); return; }
                       Intent intent = new Intent(AlarmClock.ACTION_SET_ALARM);
-                      intent.putExtra(AlarmClock.EXTRA_HOUR, hour);
-                      intent.putExtra(AlarmClock.EXTRA_MINUTES, minute);
+                      intent.putExtra(AlarmClock.EXTRA_HOUR, hour); intent.putExtra(AlarmClock.EXTRA_MINUTES, minute);
                       intent.putExtra(AlarmClock.EXTRA_MESSAGE, call.getString("message", "学财助手闹钟"));
-                      intent.putExtra(AlarmClock.EXTRA_SKIP_UI, call.getBoolean("skipUi", false));
-                      intent.putExtra(AlarmClock.EXTRA_VIBRATE, true);
+                      intent.putExtra(AlarmClock.EXTRA_SKIP_UI, call.getBoolean("skipUi", false)); intent.putExtra(AlarmClock.EXTRA_VIBRATE, true);
                       JSArray daysArr = call.getArray("days");
                       if (daysArr != null && daysArr.length() > 0) {
                           ArrayList<Integer> days = new ArrayList<>();
@@ -949,7 +946,7 @@ jobs:
           with open(os.path.join(java_dir, "NativeToolsPlugin.java"), "w", encoding="utf-8") as f:
               f.write(plugin_code)
 
-          # 5. MainActivity 注册插件
+          # 7. MainActivity 注册插件
           main_activity = textwrap.dedent("""
               package com.personal.studyhub;
 
